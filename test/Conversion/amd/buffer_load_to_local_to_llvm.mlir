@@ -1,5 +1,7 @@
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefixes=COMMON,GFX950
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 --verify-diagnostics | FileCheck %s --check-prefixes=COMMON
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefixes=COMMON,SC,GFX950
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 --verify-diagnostics | FileCheck %s --check-prefixes=COMMON,SC
+// gfx90a encodes cache policies with GLC/SLC instead of SC0/SC1/NT.
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a --verify-diagnostics | FileCheck %s --check-prefixes=COMMON,GLC
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 64], warpsPerCTA = [4, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
@@ -194,10 +196,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     // COMMON: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, %[[VOFFSET]], %[[IMM0]], %[[IMM1]], 0
     %1 = amdg.buffer_load_to_local %arg0[%0] cachePolicy = #tt.cache_policy<cache_modifier = ca, eviction_policy = evict_normal> into %arg2: !tt.ptr<f32>[tensor<64xi32, #blocked>] -> <64xf32, #shared, #smem, mutable>
     // COMMON: llvm.getelementptr
-    // COMMON: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 3
+    // SC: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 3
+    // GLC: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 1
     %2 = amdg.buffer_load_to_local %arg0[%0] cachePolicy = #tt.cache_policy<cache_modifier = cg, eviction_policy = evict_normal> into %arg2: !tt.ptr<f32>[tensor<64xi32, #blocked>] -> <64xf32, #shared, #smem, mutable>
     // COMMON: llvm.getelementptr
-    // COMMON: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 17
+    // SC: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 17
+    // GLC: rocdl.raw.ptr.buffer.load.async.lds {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, 1
     %3 = amdg.buffer_load_to_local %arg0[%0] cachePolicy = #tt.cache_policy<cache_modifier = cv, eviction_policy = evict_normal> into %arg2: !tt.ptr<f32>[tensor<64xi32, #blocked>] -> <64xf32, #shared, #smem, mutable>
 
     tt.return

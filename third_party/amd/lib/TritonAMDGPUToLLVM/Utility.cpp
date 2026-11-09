@@ -498,9 +498,8 @@ void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
 // Atomic | N/A |  0  |  1  | x  | Setting sc0 returns the pre-op value
 //        | N/A |  1  |  0  | x  | Setting sc1 performs a system-scope atomic
 // -------+-----+-----+-----+----+--
-static int32_t
-getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(triton::CacheModifier cm,
-                                          bool isLoad) {
+static int32_t getCtrlBitsForCacheModifierOnScNt(triton::CacheModifier cm,
+                                                 bool isLoad) {
   const int sc0Bit = 0b1, ntBit = 0b10, sc1Bit = 0b10000;
   int32_t aux = 0;
   switch (cm) {
@@ -525,6 +524,57 @@ getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(triton::CacheModifier cm,
   case triton::CacheModifier::WT:
     assert(!isLoad);
     aux |= sc0Bit | sc1Bit;
+    break;
+  default:
+    aux = 0;
+  }
+  return aux;
+}
+
+// gfx9 before gfx940 (bit 0 = GLC, bit 1 = SLC), following LLVM's
+// SIGfx6CacheControl. The L1 is write-through and there is no L2 bypass.
+//
+// -------+-----+-----+-----+--
+// Op     | cm  | SLC | GLC |
+// -------+-----+-----+-----+--
+// Load   | .ca |  0  |  0  |
+//        | .cg |  0  |  1  |
+//        | .cs |  1  |  1  |
+//        | .cv |  0  |  1  | bypasses the L1 only
+// -------+-----+-----+-----+--
+// Store  | .wb |  0  |  0  |
+//        | .cg |  0  |  0  |
+//        | .cs |  1  |  1  |
+//        | .wt |  1  |  1  | streams through the L2
+// -------+-----+-----+-----+--
+// Atomic | N/A |  x  |  1  | Setting GLC returns the pre-op value
+// -------+-----+-----+-----+--
+static int32_t getCtrlBitsForCacheModifierOnGlcSlc(triton::CacheModifier cm,
+                                                   bool isLoad) {
+  const int glcBit = 0b1, slcBit = 0b10;
+  int32_t aux = 0;
+  switch (cm) {
+  case triton::CacheModifier::CA:
+    aux = 0;
+    break;
+  case triton::CacheModifier::CG:
+    if (isLoad)
+      aux |= glcBit;
+    break;
+  case triton::CacheModifier::CS:
+    aux |= glcBit | slcBit;
+    break;
+  case triton::CacheModifier::CV:
+    assert(isLoad);
+    aux |= glcBit;
+    break;
+  case triton::CacheModifier::WB:
+    assert(!isLoad);
+    aux = 0;
+    break;
+  case triton::CacheModifier::WT:
+    assert(!isLoad);
+    aux |= glcBit | slcBit;
     break;
   default:
     aux = 0;
@@ -710,9 +760,10 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
   using namespace llvm::AMDGPU;
   const ROCDL::TargetInfo &info =
       targetInfo.getTargetFeatures().getTargetInfo();
-  // gfx940 replaced gfx9's GLC/SLC bits with SC0/SC1/NT.
   if (info.has(FEAT_GFX940_INSTS))
-    return getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(cm, isLoad);
+    return getCtrlBitsForCacheModifierOnScNt(cm, isLoad);
+  if (info.isGeneration(9))
+    return getCtrlBitsForCacheModifierOnGlcSlc(cm, isLoad);
   if (info.isGeneration(11))
     return getCtrlBitsForCacheModifierOnRDNA3(cm, isLoad);
   if (info.has(FEAT_GFX12_INSTS))
@@ -728,27 +779,28 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
                            const mlir::triton::AMD::TargetInfo &targetInfo) {
   const ROCDL::TargetInfo &info =
       targetInfo.getTargetFeatures().getTargetInfo();
-  // The SC0/SC1/NT encoding of gfx940+ and the SCOPE/TH encoding of gfx12.
-  const bool isGfx9 = info.has(llvm::AMDGPU::FEAT_GFX940_INSTS);
-  const bool isGfx12 = info.has(llvm::AMDGPU::FEAT_GFX12_INSTS);
-  // Whether a workgroup's waves always share a cache at CU scope: on gfx1250 a
-  // workgroup runs on one WGP.
+  const bool hasScNtBits = info.has(llvm::AMDGPU::FEAT_GFX940_INSTS);
+  const bool hasGlcSlcBits = !hasScNtBits && info.isGeneration(9);
+  const bool hasScopeBits = info.has(llvm::AMDGPU::FEAT_GFX12_INSTS);
+  // gfx1250 runs a workgroup on one WGP.
   const bool workgroupSharesCUScope =
       info.has(llvm::AMDGPU::FEAT_GFX1250_INSTS) || targetInfo.isCuMode();
   int32_t aux = 0;
   if (auto gfx9Policy =
           dyn_cast_if_present<triton::amdgpu::CachePolicyGfx9Attr>(
               cachePolicy)) {
-    if (!isGfx9)
+    if (!hasScNtBits && !hasGlcSlcBits)
       return op->emitOpError(
-          "the gfx9 cache policy is only supported on CDNA3 and CDNA4");
-    const int ntBit = 0b10;
-    if (gfx9Policy.getNontemporal())
-      aux |= ntBit;
+          "the gfx9 cache policy is only supported on gfx9 targets");
+    if (gfx9Policy.getNontemporal()) {
+      // Before gfx940, LLVM spells !nontemporal as GLC|SLC.
+      const int ntBit = 0b10, glcBit = 0b1, slcBit = 0b10;
+      aux |= hasScNtBits ? ntBit : glcBit | slcBit;
+    }
   } else if (auto gfx12Policy =
                  dyn_cast_if_present<triton::amdgpu::CachePolicyGfx12Attr>(
                      cachePolicy)) {
-    if (!isGfx12)
+    if (!hasScopeBits)
       return op->emitOpError(
           "the gfx12 cache policy is only supported on RDNA4 and CDNA5");
     // TH[2:0] holds the temporal hint, whose values match the enum's.
@@ -762,9 +814,8 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
   }
   if (!scope)
     return aux;
-  if (isGfx9) {
-    // gfx9 encodes the scope of a non-atomic access in SC[1:0]: none = wave,
-    // SC0 = workgroup, SC1 = agent, SC0|SC1 = system.
+  if (hasScNtBits) {
+    // gfx940+ encodes the scope in SC[1:0].
     const int sc0Bit = 0b1, sc1Bit = 0b10000;
     switch (*scope) {
     case triton::MemSyncScope::CTA:
@@ -774,7 +825,20 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
     case triton::MemSyncScope::SYSTEM:
       return aux | sc0Bit | sc1Bit;
     }
-  } else if (isGfx12) {
+  } else if (hasGlcSlcBits) {
+    // No scope bits: agent/system loads skip the L1 with GLC, and a workgroup
+    // shares its CU's L1 because Triton never enables tgsplit.
+    const int glcBit = 0b1;
+    if (!isLoad)
+      return aux;
+    switch (*scope) {
+    case triton::MemSyncScope::CTA:
+      return aux;
+    case triton::MemSyncScope::GPU:
+    case triton::MemSyncScope::SYSTEM:
+      return aux | glcBit;
+    }
+  } else if (hasScopeBits) {
     // gfx12 encodes it in SCOPE[4:3]: CU, SE, device or system. As in LLVM's
     // memory model, the CU scope, the default, covers a workgroup on CDNA5,
     // where it runs on one WGP, and on RDNA4 in CU mode. In RDNA4's WGP mode,
@@ -793,7 +857,7 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
     }
   } else {
     return op->emitOpError("scope on buffer loads and stores is only "
-                           "supported on CDNA3, CDNA4, CDNA5 and RDNA4");
+                           "supported on gfx9 and gfx12+ targets");
   }
   return op->emitOpError("unsupported scope on a buffer load or store");
 }

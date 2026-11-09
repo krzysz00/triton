@@ -436,6 +436,11 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
     }
     LDBG("RMW supported Op");
 
+    if (!targetFeatures.supportsBufferAtomicRMWOp(atomicRmwOp)) {
+      return rewriter.notifyMatchFailure(
+          op, "RMW op is not atomic on fine-grained memory on this target");
+    }
+
     // 6. Buffer atomics support 32 and 64-bit operations, so inputs must be at
     //    least 32-bits. Otherwise, fall back to the existing path for atomics
     auto opValueType = op.getVal().getType();

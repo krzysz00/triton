@@ -1,5 +1,6 @@
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefixes=CHECK,GFX942
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s --check-prefixes=CHECK,GFX942
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a | FileCheck %s --check-prefixes=CHECK,GFX90A
 
 // A buffer descriptor packs its base and num_records into the resource;
 // soffset feeds the instruction's scalar offset, scaled from elements to bytes.
@@ -50,19 +51,24 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// scope selects SC0/SC1 and the gfx9 policy selects NT, independently.
+// gfx90a has no scope bits: non-temporal is GLC|SLC and agent/system loads set
+// GLC.
 
 #blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
   // CHECK-LABEL: buffer_scope_policy
   tt.func @buffer_scope_policy(%arg0: !tt.ptr<f32>, %offsets: tensor<64xi32, #blocked>) {
-    // CHECK: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 2 : f32
+    // GFX942: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 2 : f32
+    // GFX90A: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 3 : f32
     %0 = amdg.buffer_load %arg0[%offsets] {cachePolicy = #amdg.cache_policy_gfx9<nontemporal = true>} : !tt.ptr<f32> -> tensor<64xf32, #blocked>
-    // CHECK: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 1 : f32
+    // GFX942: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 1 : f32
+    // GFX90A: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 0 : f32
     %1 = amdg.buffer_load %arg0[%offsets] {scope = 2 : i32} : !tt.ptr<f32> -> tensor<64xf32, #blocked>
-    // CHECK: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 18 : f32
+    // GFX942: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 18 : f32
+    // GFX90A: rocdl.raw.ptr.buffer.load %{{.*}}, %{{.*}}, %{{.*}}, 3 : f32
     %2 = amdg.buffer_load %arg0[%offsets] {scope = 1 : i32, cachePolicy = #amdg.cache_policy_gfx9<nontemporal = true>} : !tt.ptr<f32> -> tensor<64xf32, #blocked>
-    // CHECK: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 17 : f32
+    // GFX942: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 17 : f32
+    // GFX90A: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 0 : f32
     amdg.buffer_store %0, %arg0[%offsets] {scope = 3 : i32} : !tt.ptr<f32> -> tensor<64xf32, #blocked>
     tt.return
   }
@@ -75,12 +81,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
   // CHECK-LABEL: buffer_atomic_load_store
   tt.func @buffer_atomic_load_store(%arg0: !tt.ptr<i32>, %offsets: tensor<64xi32, #blocked>, %mask: tensor<64xi1, #blocked>, %s: i32, %n: i32) {
     %desc = amdg.make_buffer_desc %arg0, %n : !tt.ptr<i32> -> !amdg.buffer_desc<i32>
-    // CHECK: %[[AUX:.*]] = llvm.mlir.constant(16 : i32) : i32
+    // GFX942: %[[AUX:.*]] = llvm.mlir.constant(16 : i32) : i32
+    // GFX90A: %[[AUX:.*]] = llvm.mlir.constant(1 : i32) : i32
     // CHECK: llvm.call_intrinsic "llvm.amdgcn.raw.ptr.atomic.buffer.load"(%{{.*}}, %{{.*}}, %{{.*}}, %[[AUX]]) : (!llvm.ptr<8>, i32, i32, i32) -> i32
     // CHECK: llvm.fence syncscope("agent") acquire
     %0 = amdg.buffer_atomic_load acquire, gpu, %desc[%offsets], %mask soffset = %s : i32 : !amdg.buffer_desc<i32> -> tensor<64xi32, #blocked>
     // CHECK: llvm.fence release
-    // CHECK: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 17 : i32
+    // GFX942: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 17 : i32
+    // GFX90A: rocdl.raw.ptr.buffer.store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, 0 : i32
     amdg.buffer_atomic_store release, sys, %0, %desc[%offsets], %mask soffset = %s : i32 : !amdg.buffer_desc<i32> -> tensor<64xi32, #blocked>
     tt.return
   }

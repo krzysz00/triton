@@ -9,6 +9,10 @@
 #include <optional>
 #include <string>
 
+namespace mlir::triton {
+enum class RMWOp : uint32_t;
+} // namespace mlir::triton
+
 namespace mlir::triton::amdgpu {
 
 // WMMA table tags: LLVM's feature names, plus one for the gfx1250-strict
@@ -96,6 +100,7 @@ public:
   bool supportsClusterLoadBitWidth(int bitWidth) const;
 
   bool supportsBufferAtomicRMW() const;
+  bool supportsBufferAtomicRMWOp(RMWOp op) const;
   bool supportsBufferAtomicFadd(Type elementType) const;
   bool supportsBufferAtomicFMinMax(Type elementType) const;
   int32_t getBufferAtomicCachePolicy(bool hasUsers) const;
@@ -120,6 +125,7 @@ private:
 
   // v_cvt_scalef32_pk_* between f32/f16/bf16 and fp8/bf8/fp4.
   bool hasScaledPkCvtInsts() const;
+  bool atomicsSafeOnFineGrainedMemory() const;
 
   std::string arch;
   ::mlir::ROCDL::TargetInfo info;

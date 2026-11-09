@@ -1,5 +1,7 @@
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefix=GFX950
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s --check-prefixes=CHECK,SC
+// gfx90a encodes cache policies with GLC/SLC instead of SC0/SC1/NT.
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a | FileCheck %s --check-prefixes=CHECK,GLC
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 64], warpsPerCTA = [4, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
@@ -272,10 +274,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.sha
     // CHECK: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 0
     %2 = ttg.async_copy_global_to_local %1, %arg2 {cachePolicy = #tt.cache_policy<cache_modifier = ca, eviction_policy = evict_normal>}: tensor<32x32x!tt.ptr<f32>, #blocked> -> <32x32xf32, #shared, #smem, mutable>
     // CHECK: llvm.getelementptr
-    // CHECK: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 3
+    // SC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 3
+    // GLC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 1
     %3 = ttg.async_copy_global_to_local %1, %arg2 {cachePolicy = #tt.cache_policy<cache_modifier = cg, eviction_policy = evict_normal>}: tensor<32x32x!tt.ptr<f32>, #blocked> -> <32x32xf32, #shared, #smem, mutable>
     // CHECK: llvm.getelementptr
-    // CHECK: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 17
+    // SC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 17
+    // GLC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 1
     %4 = ttg.async_copy_global_to_local %1, %arg2 {cachePolicy = #tt.cache_policy<cache_modifier = cv, eviction_policy = evict_normal>}: tensor<32x32x!tt.ptr<f32>, #blocked> -> <32x32xf32, #shared, #smem, mutable>
     tt.return
   }
@@ -291,7 +295,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.sha
   tt.func public @async_copy_gfx9_cache_policy(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
                                 %arg2: !ttg.memdesc<32x32xf32, #shared, #smem, mutable>) {
     %1 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<32x32x!tt.ptr<f32>, #blocked>
-    // CHECK: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 2
+    // SC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 2
+    // GLC: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 3
     %2 = ttg.async_copy_global_to_local %1, %arg2 {cachePolicy = #amdg.cache_policy_gfx9<nontemporal = true>}: tensor<32x32x!tt.ptr<f32>, #blocked> -> <32x32xf32, #shared, #smem, mutable>
     // CHECK: rocdl.global.load.async.lds {{.*}}, {{.*}}, 4, 0, 0
     %3 = ttg.async_copy_global_to_local %1, %arg2 {cachePolicy = #amdg.cache_policy_gfx9<nontemporal = false>}: tensor<32x32x!tt.ptr<f32>, #blocked> -> <32x32xf32, #shared, #smem, mutable>

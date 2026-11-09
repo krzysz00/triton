@@ -229,13 +229,26 @@ bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
 }
 
 bool TargetFeatures::supportsBufferAtomicRMW() const {
-  // Every gfx9+ target has the integer buffer atomics, but the fences and
-  // cache-policy bits the buffer atomic lowering emits follow the gfx942 and
-  // gfx11+ memory models, so gfx90a and older keep the generic lowering.
-  return has(FEAT_GFX940_INSTS) || has(FEAT_GFX11_INSTS);
+  // Agent-scope RMW atomics need only the return bit (and SCOPE_DEV on gfx12).
+  return has(FEAT_GFX90A_INSTS) || has(FEAT_GFX11_INSTS);
+}
+
+bool TargetFeatures::supportsBufferAtomicRMWOp(RMWOp op) const {
+  // Over PCIe, only integer add and exchange are atomic on fine-grained memory.
+  return supportsBufferAtomicRMW() && (atomicsSafeOnFineGrainedMemory() ||
+                                       op == RMWOp::ADD || op == RMWOp::XCHG);
+}
+
+bool TargetFeatures::atomicsSafeOnFineGrainedMemory() const {
+  // Buffer atomics bypass LLVM's CAS fallback for fine-grained memory.
+  // TODO(llvm): Query agent-scope-fine-grained-remote-memory-atomics once
+  // exposed; gfx11 lacks it too but keeps its buffer atomics for now.
+  return !info.isGeneration(9) || has(FEAT_GFX940_INSTS);
 }
 
 bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
+  if (!atomicsSafeOnFineGrainedMemory())
+    return false;
   // Atomics with users need the returning form.
   if (elementType.isF32())
     return has(FEAT_ATOMIC_FADD_RTN_INSTS);
@@ -249,6 +262,8 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
 }
 
 bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
+  if (!atomicsSafeOnFineGrainedMemory())
+    return false;
   // LLVM gates the buffer forms on the global forms' features.
   if (elementType.isF32())
     return has(FEAT_ATOMIC_FMIN_FMAX_GLOBAL_F32);
@@ -258,7 +273,8 @@ bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
 }
 
 int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
-  const int sc0Bit = 0b1;          // TH_ATOMIC_RETURN (cpol bit 0)
+  // GLC, SC0 and TH_ATOMIC_RETURN are all cpol bit 0.
+  const int sc0Bit = 0b1;
   const int scopeDevBit = 0b10000; // SCOPE_DEV = 2 << 3 (cpol bits [4:3])
   int32_t aux = 0;
   if (hasUsers)
