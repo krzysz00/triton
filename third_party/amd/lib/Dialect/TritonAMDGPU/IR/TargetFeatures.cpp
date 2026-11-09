@@ -27,8 +27,8 @@ TargetFeatures::TargetFeatures(std::optional<StringRef> arch)
     : TargetFeatures(arch.value_or("")) {}
 
 TargetFeatures::TargetFeatures(StringRef arch)
-    : arch(arch.str()), baseArch(arch.split("-strict").first),
-      info(parseTargetInfo(arch)), isaFamily(computeISAFamily(info)) {}
+    : arch(arch.str()), info(parseTargetInfo(arch)),
+      isaFamily(computeISAFamily(info)) {}
 
 TargetFeatures TargetFeatures::fromModuleOp(ModuleOp moduleOp) {
   auto targetAttr =
@@ -44,8 +44,6 @@ TargetFeatures TargetFeatures::fromModuleOp(ModuleOp moduleOp) {
 }
 
 StringRef TargetFeatures::getArch() const { return arch; }
-
-StringRef TargetFeatures::getBaseArch() const { return baseArch; }
 
 ISAFamily TargetFeatures::getISAFamily() const { return isaFamily; }
 

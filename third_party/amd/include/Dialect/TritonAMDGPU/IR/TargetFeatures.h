@@ -57,7 +57,6 @@ public:
   static TargetFeatures fromModuleOp(ModuleOp moduleOp);
 
   StringRef getArch() const;
-  StringRef getBaseArch() const;
 
   ISAFamily getISAFamily() const;
 
@@ -123,7 +122,6 @@ private:
   bool hasScaledPkCvtInsts() const;
 
   std::string arch;
-  std::string baseArch;
   ::mlir::ROCDL::TargetInfo info;
   ISAFamily isaFamily;
 };

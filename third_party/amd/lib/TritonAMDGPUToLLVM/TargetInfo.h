@@ -18,7 +18,6 @@ public:
     return targetFeatures;
   }
   StringRef getArch() const { return targetFeatures.getArch(); }
-  StringRef getBaseArch() const { return targetFeatures.getBaseArch(); }
   amdgpu::ISAFamily getISAFamily() const {
     return targetFeatures.getISAFamily();
   }
