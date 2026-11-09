@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import triton
@@ -285,3 +287,105 @@ def test_gfx1250_tl_dot_fp16_acc(a_dtype, b_dtype, k_dim):
         operands = b_ty + "_" + a_ty
     assert f"v_wmma_f16_16x16x{k_dim}_{operands}" in amdgcn
     assert "v_wmma_f32_" not in amdgcn
+
+
+@pytest.mark.parametrize("arch", ["gfx942", "gfx942:xnack+", "amdgpu9.42-amd-amdhsa", "amdgpu9.42-amd-amdhsa--gfx942"])
+def test_target_info_spellings(arch):
+    info = compiler.amd.get_target_info(arch)
+    assert info["arch"] == "gfx942"
+    assert info["triple"] == "amdgpu9.42-amd-amdhsa"
+    assert compiler.amd.get_target_triple(arch) == "amdgpu9.42-amd-amdhsa"
+    assert info["warp_size"] == 64
+    assert info["lds_size"] == 64 * 1024
+    assert info["lds_banks"] == 32
+    assert info["isa_family"] == "cdna3"
+    assert not info["is_generic"]
+    assert info["supports_xnack"]
+    assert "gfx940-insts" in info["features"]
+    assert "gfx950-insts" not in info["features"]
+
+
+@triton.jit
+def _copy_kernel(src_ptr, dst_ptr, n, BLOCK: tl.constexpr):
+    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < n
+    tl.store(dst_ptr + offsets, tl.load(src_ptr + offsets, mask=mask), mask=mask)
+
+
+def _compile_copy(arch, monkeypatch):
+    monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
+    info = compiler.amd.get_target_info(arch)
+    src = triton.compiler.ASTSource(_copy_kernel, {"src_ptr": "*fp32", "dst_ptr": "*fp32", "n": "i32"}, {"BLOCK": 64})
+    return triton.compile(src=src, target=GPUTarget("hip", arch, info["warp_size"]))
+
+
+def _amdgcn_target(k):
+    return re.search(r'\.amdgcn_target "([^"]+)"', k.asm["amdgcn"]).group(1)
+
+
+@pytest.mark.parametrize("arch, target_suffix", [
+    ("gfx942:xnack+", "gfx942:xnack+"),
+    ("gfx942:sramecc-", "gfx942:sramecc-"),
+    ("amdgpu9.42-amd-amdhsa", "gfx942"),
+    ("amdgpu9.42-amd-amdhsa--gfx942:xnack-", "gfx942:xnack-"),
+])
+def test_compile_target_id_spellings(arch, target_suffix, monkeypatch, capfd):
+    k = _compile_copy(arch, monkeypatch)
+    assert k.metadata.arch == "gfx942"
+    assert k.metadata.target_id == arch
+    assert _amdgcn_target(k).endswith("-" + target_suffix)
+    assert k.asm["hsaco"]
+    assert "not a recognized processor" not in capfd.readouterr().err
+
+
+@pytest.mark.parametrize("arch, warp_size, lds_size, family, generic", [
+    ("gfx950", 64, 160 * 1024, "cdna4", False),
+    ("gfx1100", 32, 64 * 1024, "rdna3", False),
+    ("gfx1201", 32, 64 * 1024, "rdna4", False),
+    ("gfx1250", 32, 320 * 1024, "cdna5", False),
+    ("gfx1250-strict", 32, 320 * 1024, "cdna5", False),
+    ("gfx9-4-generic", 64, 64 * 1024, "cdna3", True),
+    ("gfx12-5-generic", 32, 320 * 1024, "cdna5", True),
+])
+def test_target_info(arch, warp_size, lds_size, family, generic):
+    info = compiler.amd.get_target_info(arch)
+    assert info["warp_size"] == warp_size
+    assert info["lds_size"] == lds_size
+    assert info["isa_family"] == family
+    assert info["is_generic"] == generic
+
+
+@pytest.mark.parametrize("arch", ["gfx9999", "sm_90", "", "amdgcn-amd-amdhsa"])
+def test_target_info_rejects_unknown(arch):
+    with pytest.raises(ValueError, match="invalid AMD GPU architecture"):
+        compiler.amd.get_target_info(arch)
+    with pytest.raises(ValueError, match="invalid AMD GPU architecture"):
+        compiler.amd.get_target_triple(arch)
+
+
+def test_target_id_cpu_for_mc():
+    # The MC layer gets the canonical processor name, not the target ID.
+    llvm.init_targets()
+    assert compiler.amd.has_architected_sgprs("amdgpu12.50s-amd-amdhsa")
+    assert not compiler.amd.has_architected_sgprs("gfx942:xnack-")
+
+
+# Only targets with xnack on/off modes get a modifier.
+@pytest.mark.parametrize("arch, target_suffix", [
+    ("gfx942", "gfx942:xnack+"),
+    ("gfx950", "gfx950:xnack+"),
+    ("gfx942:xnack-", "gfx942:xnack+"),
+    ("gfx942:sramecc+:xnack-", "gfx942:sramecc+:xnack+"),
+    ("gfx1250", "gfx1250"),
+    ("gfx1100", "gfx1100"),
+])
+def test_asan_requests_xnack(arch, target_suffix, monkeypatch, capfd):
+    monkeypatch.setenv("TRITON_ENABLE_ASAN", "1")
+    k = _compile_copy(arch, monkeypatch)
+    xnack = target_suffix.endswith(":xnack+")
+    flag = re.search(r'!\{i32 \d+, !"amdgpu.xnack", i32 (\d+)\}', k.asm["llir"])
+    assert (flag is not None and flag.group(1) == "1") == xnack
+    assert "+xnack" not in k.asm["llir"]
+    assert _amdgcn_target(k).endswith("-" + target_suffix)
+    assert k.asm["hsaco"]
+    assert "not a recognized feature" not in capfd.readouterr().err

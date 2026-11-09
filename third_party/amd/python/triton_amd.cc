@@ -7,6 +7,8 @@
 #include "dylib_utils.h"
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "lld/Common/Driver.h"
+#include "mlir/Dialect/LLVMIR/ROCDLTargetInfo.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "passes.h"
@@ -39,6 +41,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
+#include <nanobind/stl/set.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <optional>
@@ -48,14 +51,45 @@
 namespace py = nanobind;
 
 namespace {
-llvm::Triple getAMDTargetTriple(const std::string &arch) {
-  llvm::AMDGPU::GPUKind gpuKind = llvm::AMDGPU::parseArchAMDGCN(arch);
-  llvm::Triple::SubArchType subArch = llvm::AMDGPU::getSubArch(gpuKind);
-  if (subArch == llvm::Triple::NoSubArch)
+// Accepts processors, target IDs and triples, as ROCDL::TargetInfo does.
+mlir::ROCDL::TargetInfo getAMDTargetInfo(const std::string &arch) {
+  mlir::FailureOr<mlir::ROCDL::TargetInfo> info =
+      mlir::ROCDL::TargetInfo::get(arch);
+  if (mlir::failed(info) || info->isUnknown())
     throw std::invalid_argument("invalid AMD GPU architecture: " + arch);
+  return *info;
+}
 
-  return llvm::Triple(llvm::Triple::amdgpu, subArch, llvm::Triple::AMD,
-                      llvm::Triple::AMDHSA);
+llvm::Triple getAMDTargetTriple(const mlir::ROCDL::TargetInfo &info) {
+  return llvm::Triple(llvm::Triple::amdgpu, info.getSubArch(),
+                      llvm::Triple::AMD, llvm::Triple::AMDHSA);
+}
+
+llvm::Triple getAMDTargetTriple(const std::string &arch) {
+  return getAMDTargetTriple(getAMDTargetInfo(arch));
+}
+
+const char *getISAFamilyName(mlir::triton::amdgpu::ISAFamily family) {
+  using mlir::triton::amdgpu::ISAFamily;
+  switch (family) {
+  case ISAFamily::CDNA2:
+    return "cdna2";
+  case ISAFamily::CDNA3:
+    return "cdna3";
+  case ISAFamily::CDNA4:
+    return "cdna4";
+  case ISAFamily::CDNA5:
+    return "cdna5";
+  case ISAFamily::RDNA3:
+    return "rdna3";
+  case ISAFamily::RDNA4m:
+    return "rdna4m";
+  case ISAFamily::RDNA4:
+    return "rdna4";
+  case ISAFamily::Unknown:
+    break;
+  }
+  return "unknown";
 }
 
 void init_triton_amd_passes_ttgpuir(py::module_ &m) {
@@ -388,9 +422,39 @@ void init_triton_amd(py::module_ &m) {
           module->setTargetTriple(getAMDTargetTriple(arch));
         });
 
+  m.def("get_target_info", [](const std::string &arch) {
+    mlir::ROCDL::TargetInfo info = getAMDTargetInfo(arch);
+    mlir::triton::amdgpu::TargetFeatures features{llvm::StringRef(arch)};
+    llvm::SmallVector<llvm::StringRef> featureNames;
+    llvm::AMDGPU::getFeatureNames(info.getFeatures(), featureNames);
+    std::set<std::string> featureSet;
+    for (llvm::StringRef name : featureNames)
+      featureSet.insert(name.str());
+
+    py::dict result;
+    result["arch"] = info.getArchName().str();
+    result["triple"] = getAMDTargetTriple(info).str();
+    result["warp_size"] = features.getWarpSize();
+    result["lds_size"] = features.getSharedMemorySize();
+    result["lds_banks"] = features.getSharedMemoryBanks();
+    result["isa_family"] = getISAFamilyName(features.getISAFamily());
+    // TODO(llvm): Use info.isGeneric() once it handles gfx1250-strict.
+    result["is_generic"] = info.getArchName().ends_with("-generic");
+    result["supports_xnack"] =
+        info.getXnackSetting() != llvm::AMDGPU::TargetIDSetting::Unsupported;
+    result["features"] = featureSet;
+    return result;
+  });
+
+  // Records the target ID's xnack/sramecc settings as LLVM module flags.
+  m.def("set_target_id_module_flags",
+        [](mlir::ModuleOp &module, const std::string &arch) {
+          getAMDTargetInfo(arch).migrateArchFeaturesToModuleFlags(module);
+        });
+
   // Set target architecture ISA version
   m.def("set_isa_version", [](llvm::Module *module, const std::string &arch) {
-    llvm::AMDGPU::IsaVersion version = llvm::AMDGPU::getIsaVersion(arch);
+    llvm::AMDGPU::IsaVersion version = getAMDTargetInfo(arch).getIsaVersion();
     addControlConstant(module, "__oclc_ISA_version", /*bitwidth=*/32,
                        version.Major * 1000 + version.Minor * 100 +
                            version.Stepping);
@@ -456,7 +520,8 @@ void init_triton_amd(py::module_ &m) {
                               const std::string &features) {
     std::string error;
 
-    llvm::Triple triple = getAMDTargetTriple(arch);
+    mlir::ROCDL::TargetInfo info = getAMDTargetInfo(arch);
+    llvm::Triple triple = getAMDTargetTriple(info);
     const llvm::Target *target =
         llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target)
@@ -471,7 +536,7 @@ void init_triton_amd(py::module_ &m) {
     std::unique_ptr<llvm::MCAsmInfo> mai(
         target->createMCAsmInfo(*mri, triple, mcOptions));
     std::unique_ptr<llvm::MCSubtargetInfo> sti(
-        target->createMCSubtargetInfo(triple, arch, features));
+        target->createMCSubtargetInfo(triple, info.getArchName(), features));
 
     llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
     std::unique_ptr<llvm::MCObjectFileInfo> mofi(
@@ -512,13 +577,14 @@ void init_triton_amd(py::module_ &m) {
 
   m.def("has_architected_sgprs", [](const std::string &arch) {
     std::string error;
-    llvm::Triple triple = getAMDTargetTriple(arch);
+    mlir::ROCDL::TargetInfo info = getAMDTargetInfo(arch);
+    llvm::Triple triple = getAMDTargetTriple(info);
     const llvm::Target *target =
         llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target)
       throw std::runtime_error("target lookup error: " + error);
     std::unique_ptr<llvm::MCSubtargetInfo> sti(
-        target->createMCSubtargetInfo(triple, arch, ""));
+        target->createMCSubtargetInfo(triple, info.getArchName(), ""));
     return sti->checkFeatures("+architected-sgprs");
   });
 

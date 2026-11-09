@@ -237,13 +237,15 @@ def _cross_check_dag_against_llvm(mir_content, llc_path):
     if mir_only.endswith("..."):
         mir_only = mir_only[:-3].rstrip()
 
+    from triton._C.libtriton import amd
+
     arch = triton.runtime.driver.active.get_current_target().arch
     with tempfile.NamedTemporaryFile("w", suffix=".mir", delete=False) as f:
         f.write(mir_only)
         mir_path = f.name
     try:
         proc = subprocess.run([
-            llc_path, "-mtriple=amdgcn-amd-amdhsa", f"-mcpu={arch}", "-start-before=machine-scheduler",
+            llc_path, f"-mtriple={amd.get_target_triple(arch)}", "-start-before=machine-scheduler",
             "-stop-after=machine-scheduler", "-misched-print-dags", mir_path, "-o", os.devnull
         ], capture_output=True, text=True, timeout=120)
     finally:

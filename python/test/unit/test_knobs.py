@@ -184,7 +184,7 @@ def _compile_empty_hip_kernel(arch, warp_size):
     return triton.compile(triton.compiler.ASTSource(empty_kernel, {}), target=GPUTarget("hip", arch, warp_size))
 
 
-def _amd_scheduler_kernel():
+def _amd_scheduler_kernel(triple):
     arithmetic = []
     stores = []
     for lane in range(32):
@@ -199,7 +199,7 @@ def _amd_scheduler_kernel():
             f"  store i32 %value{lane}, ptr addrspace(1) %out{lane}, align 4",
         ])
 
-    return ('target triple = "amdgcn-amd-amdhsa"\n'
+    return (f'target triple = "{triple}"\n'
             'define amdgpu_kernel void @scheduler_kernel(ptr addrspace(1) %out, i32 %seed) {\n' +
             "\n".join(arithmetic + stores) + "\n  ret void\n}\n")
 
@@ -209,7 +209,6 @@ def test_amd_llvm_options_concurrent():
     from triton.backends.amd import compiler
 
     compiler.llvm.init_targets()
-    source = _amd_scheduler_kernel()
     # gfx950 codegen needs a process-wide LLVM option that CDNA5 codegen must
     # not see, and every HSACO link resets all LLVM options.
     backends = {
@@ -221,6 +220,7 @@ def test_amd_llvm_options_concurrent():
         backend = backends[arch]
         options = backend.parse_options({})
         metadata = {}
+        source = _amd_scheduler_kernel(compiler.amd.get_target_triple(arch))
         amdgcn = backend.make_amdgcn(source, metadata, options)
         backend.make_hsaco(amdgcn, metadata, options)
         return amdgcn
@@ -327,9 +327,7 @@ def test_amd_codegen_inlines_functions_from_bitcode(fresh_knobs, monkeypatch):
     from triton.backends.compiler import GPUTarget
     from triton.backends.amd import compiler
 
-    source = '''
-target triple = "amdgcn-amd-amdhsa"
-
+    source = f'target triple = "{compiler.amd.get_target_triple("gfx942")}"\n' + '''
 define internal i32 @helper(i32 %value) {
   %result = add i32 %value, 1
   ret i32 %result
@@ -392,12 +390,12 @@ def test_amd_codegen_assembles_object_with_private_llvm(fresh_knobs):
     from triton.backends.compiler import GPUTarget
     from triton.backends.amd import compiler
 
-    source = '''
-target triple = "amdgcn-amd-amdhsa"
+    source = f'''
+target triple = "{compiler.amd.get_target_triple("gfx942")}"
 
-define amdgpu_kernel void @object_kernel() {
+define amdgpu_kernel void @object_kernel() {{
   ret void
-}
+}}
 '''
     backend = compiler.HIPBackend(GPUTarget("hip", "gfx942", 64))
     assembly = backend.make_amdgcn(source, {}, compiler.HIPOptions(arch="gfx942"))

@@ -181,7 +181,8 @@ def is_hip_rdna():
 
 
 def get_hip_lds_size():
-    return 163840 if is_hip_cdna4() else 65536
+    from triton._C.libtriton import amd
+    return amd.get_target_info(get_current_target().arch)["lds_size"]
 
 
 def is_xpu():

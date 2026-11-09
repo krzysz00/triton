@@ -380,6 +380,8 @@ class HIPOptions:
     debug: bool = False
     sanitize_overflow: bool = True
     arch: str = None
+    # The arch as given (e.g. a target ID); `arch` is canonicalized from it.
+    target_id: str = None
     # We have native support for OCP fp8 variants since CDNA4/RDNA4. For earlier generations,
     # we software emulate the support for them.
     # UZ fp8 variants (fp8e4b8 and fp8e5b16) are natively supported for CDNA3. For other
@@ -423,12 +425,14 @@ class HIPOptions:
     def __post_init__(self):
         if self.wgp_cu_mode not in ("wgp", "cu"):
             raise ValueError("wgp_cu_mode must be 'wgp' or 'cu'")
-        # The arch without the "-strict" suffix.
+        if self.target_id is None:
+            object.__setattr__(self, 'target_id', self.arch)
+        info = amd.get_target_info(self.target_id)
+        object.__setattr__(self, 'arch', info["arch"])
+        # The arch without the "-strict" suffix, used to pick tuning heuristics.
         base_arch = self.arch.removesuffix("-strict")
         object.__setattr__(self, 'base_arch', base_arch)
-        gfx_major = int(base_arch[3:-2])  # Drop "gfx" prefix and minor/patch number
-        warp_size = 32 if gfx_major >= 10 else 64
-        object.__setattr__(self, 'warp_size', warp_size)
+        object.__setattr__(self, 'warp_size', info["warp_size"])
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
             "num_warps must be a power of 2"
 
@@ -483,14 +487,15 @@ class HIPBackend(BaseBackend):
             opts["sanitize_overflow"] = False
 
         args = {'arch': knobs.runtime.override_arch or self.target.arch}
+        target_arch = amd.get_target_info(self.target.arch)["arch"]
         if opts.get("schedule_hint", "") not in ("", "mfma-schedule"):
             raise ValueError(f"schedule_hint: unknown value {opts['schedule_hint']!r}; supported: 'mfma-schedule'")
 
-        if opts.get("num_ctas", 1) > 1 and not amd.supports_multi_cta_launch(self.target.arch):
+        if opts.get("num_ctas", 1) > 1 and not amd.supports_multi_cta_launch(target_arch):
             raise ValueError(f"num_ctas > 1 not supported on {self.target.arch}")
 
         # Enable XF32 (TF32) for CDNA3 GPUs
-        if self.target.arch == 'gfx942':
+        if target_arch == 'gfx942':
             allowed_dot_input_precisions = set(HIPOptions.allowed_dot_input_precisions)
             allowed_dot_input_precisions.update({'tf32'})
             args["allowed_dot_input_precisions"] = tuple(sorted(allowed_dot_input_precisions))
@@ -498,7 +503,7 @@ class HIPBackend(BaseBackend):
         if "supported_fp8_dtypes" not in opts:
             args["supported_fp8_dtypes"] = tuple(sorted(HIPOptions.supported_fp8_dtypes))
 
-        if self.target.arch == 'gfx950':
+        if target_arch == 'gfx950':
             deprecated_fp8_dot_operand_dtypes = set(HIPOptions.deprecated_fp8_dot_operand_dtypes)
             deprecated_fp8_dot_operand_dtypes.update({"fp8e5b16", "fp8e4b8"})
             args["deprecated_fp8_dot_operand_dtypes"] = tuple(sorted(deprecated_fp8_dot_operand_dtypes))
@@ -746,16 +751,21 @@ class HIPBackend(BaseBackend):
             passes.llvmir.add_di_local_variable(pm)
             pm.run(mod, 'make_llir.dump_ir_extract_di_local_variables')
 
+        # xnack/sramecc are code-object properties, recorded as module flags.
+        modifiers = re.findall(r":(?:xnack|sramecc)[+-]", options.target_id)
+        # ASan needs xnack to report faulting accesses.
+        if knobs.compilation.enable_asan and "xnack-on-off-modes" in amd.get_target_info(options.arch)["features"]:
+            modifiers = [m for m in modifiers if not m.startswith(":xnack")] + [":xnack+"]
+        if modifiers:
+            amd.set_target_id_module_flags(mod, options.arch + "".join(modifiers))
+
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
         llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
         target_triple = amd.get_target_triple(options.arch)
         amd.attach_target_triple(llvm_mod, options.arch)
-        target_features = ''
-        if knobs.compilation.enable_asan:
-            target_features = '+xnack'
-        llvm.attach_datalayout(llvm_mod, target_triple, options.arch, target_features, get_llvm_flags(options))
+        llvm.attach_datalayout(llvm_mod, target_triple, options.arch, '', get_llvm_flags(options))
 
         # Set various control constants on the LLVM module so that device
         # libraries can resolve references to them.
@@ -799,7 +809,6 @@ class HIPBackend(BaseBackend):
         kernel_fn.add_fn_attr("denormal-fp-math-f32", denormal_mode)
 
         if knobs.compilation.enable_asan:
-            kernel_fn.add_fn_target_feature("+xnack")
             kernel_fn.add_fn_asan_attr()
         if options.wgp_cu_mode == "cu":
             if knobs.compilation.enable_asan:
@@ -926,10 +935,7 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_hsaco(src, metadata, options):
-        target_features = []
-        if knobs.compilation.enable_asan:
-            target_features.append('+xnack')
-        hsaco = assemble_amdgcn(src, options.arch, ','.join(target_features))
+        hsaco = assemble_amdgcn(src, options.arch, '')
         with tempfile.NamedTemporaryFile() as tmp_out:
             with tempfile.NamedTemporaryFile() as tmp_in:
                 with open(tmp_in.name, "wb") as fd_in:

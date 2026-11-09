@@ -30,7 +30,7 @@ def test_llvm_ir_to_bitcode_reports_invalid_ir():
 @pytest.mark.parametrize("dtype", ["i8", "i16", "i32", "i64", "f16", "f32", "f64"])
 @pytest.mark.parametrize("num_elements", [2, 4])
 @pytest.mark.parametrize("enable_nvptx_tti", [False, True])
-@pytest.mark.parametrize("triple", ["", "nvptx64-nvidia-cuda", "amdgcn-amd-amdhsa"])
+@pytest.mark.parametrize("triple", ["", "nvptx64-nvidia-cuda", "amdgpu9.42-amd-amdhsa"])
 @pytest.mark.parametrize("dynamic_indices", [False, True])
 def test_nvptx_tti_vector_load_scalarization(dtype, num_elements, enable_nvptx_tti, triple, dynamic_indices, tmp_path):
     from triton._C.libtriton import ir, llvm
