@@ -98,7 +98,8 @@ public:
 
   bool supportMaximumMinimum() const;
   bool supportDppBroadcast() const;
-  bool supportsPermlaneSwap() const;
+  bool supportsPermlane16Swap() const;
+  bool supportsPermlane32Swap() const;
   bool supportsCvtPkScalePk8() const;
   bool supportsCvtPkScalePk8Upcast() const;
   bool supportsCvtPkScalePk8Block16() const;
@@ -111,6 +112,9 @@ public:
 
 private:
   static constexpr char kTargetPrefix[] = "hip:";
+
+  // v_cvt_scalef32_pk_* between f32/f16/bf16 and fp8/bf8/fp4.
+  bool hasScaledPkCvtInsts() const;
 
   std::string arch;
   std::string baseArch;

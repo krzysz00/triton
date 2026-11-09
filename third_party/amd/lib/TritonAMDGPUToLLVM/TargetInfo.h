@@ -201,8 +201,11 @@ public:
   }
 
   bool supportsWaveId() const { return targetFeatures.supportsWaveId(); }
-  bool supportsPermlaneSwap() const {
-    return targetFeatures.supportsPermlaneSwap();
+  bool supportsPermlane16Swap() const {
+    return targetFeatures.supportsPermlane16Swap();
+  }
+  bool supportsPermlane32Swap() const {
+    return targetFeatures.supportsPermlane32Swap();
   }
   bool supportsCvtPkScalePk8() const {
     return targetFeatures.supportsCvtPkScalePk8();

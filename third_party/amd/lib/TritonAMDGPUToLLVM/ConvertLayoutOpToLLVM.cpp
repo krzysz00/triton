@@ -22,7 +22,9 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto &amdTargInfo =
         static_cast<const mlir::triton::AMD::TargetInfo &>(targetInfo);
-    if (!amdTargInfo.supportsPermlaneSwap())
+    bool hasPermlane16Swap = amdTargInfo.supportsPermlane16Swap();
+    bool hasPermlane32Swap = amdTargInfo.supportsPermlane32Swap();
+    if (!hasPermlane16Swap && !hasPermlane32Swap)
       return failure();
 
     auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
@@ -88,6 +90,12 @@ public:
     bool isThreeCycle = (next(4) == 5 && next(5) == 4);
 
     if (!(isSingleTransposition || isThreeCycle))
+      return failure();
+
+    bool needsPermlane16Swap = isThreeCycle || lBit == 4;
+    bool needsPermlane32Swap = isThreeCycle || lBit == 5;
+    if ((needsPermlane16Swap && !hasPermlane16Swap) ||
+        (needsPermlane32Swap && !hasPermlane32Swap))
       return failure();
 
     auto loc = op.getLoc();

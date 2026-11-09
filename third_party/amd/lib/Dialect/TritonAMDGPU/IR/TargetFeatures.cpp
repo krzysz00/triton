@@ -8,6 +8,8 @@
 
 namespace mlir::triton::amdgpu {
 
+using namespace llvm::AMDGPU;
+
 namespace {
 ::mlir::ROCDL::TargetInfo parseTargetInfo(StringRef arch) {
   // Passes may run without a target.
@@ -53,7 +55,6 @@ ISAFamily computeISAFamily(const ::mlir::ROCDL::TargetInfo &info) {
   // generic targets and processors added to LLVM later land in the family
   // whose instructions they have. See
   // https://llvm.org/docs/AMDGPUUsage.html#processors for the grouping.
-  using namespace llvm::AMDGPU;
   if (info.isGeneration(9)) {
     if (info.has(FEAT_GFX950_INSTS))
       return ISAFamily::CDNA4;
@@ -120,19 +121,18 @@ int TargetFeatures::getSharedMemoryBanks() const {
 }
 
 size_t TargetFeatures::getSharedMemoryPartitionSize() const {
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA5:
+  // TODO(llvm): Query the LDS partition size once LLVM exposes it.
+  if (has(FEAT_GFX1250_INSTS))
     return 64 * 1024;
-  default:
-    // No partitioning on other targets.
-    return 0;
-  }
+  // No partitioning on other targets.
+  return 0;
 }
 
 std::optional<TargetFeatures::LDSTransLoadParams>
 TargetFeatures::queryLDSTransLoadParams(int bitWidth) const {
+  enum class TransLoadKind { None, Gfx950, Gfx1250 };
   struct TransConfig {
-    ISAFamily isaFamily;
+    TransLoadKind kind;
     int bitWidth;
     unsigned instBitWidth;
     // addr basis order:
@@ -145,14 +145,23 @@ TargetFeatures::queryLDSTransLoadParams(int bitWidth) const {
   };
 
   static constexpr TransConfig configs[] = {
-      {ISAFamily::CDNA4, 16, 64, 0, 2}, {ISAFamily::CDNA4, 8, 64, 0, 1},
-      {ISAFamily::CDNA4, 4, 64, 0, 0},  {ISAFamily::CDNA5, 16, 128, 0, 0},
-      {ISAFamily::CDNA5, 8, 64, 2, 1},  {ISAFamily::CDNA5, 4, 64, 3, 1},
+      {TransLoadKind::Gfx950, 16, 64, 0, 2},
+      {TransLoadKind::Gfx950, 8, 64, 0, 1},
+      {TransLoadKind::Gfx950, 4, 64, 0, 0},
+      {TransLoadKind::Gfx1250, 16, 128, 0, 0},
+      {TransLoadKind::Gfx1250, 8, 64, 2, 1},
+      {TransLoadKind::Gfx1250, 4, 64, 3, 1},
   };
 
-  const auto isaFamily = getISAFamily();
+  // TODO(llvm): Query a transposing-LDS-load feature once LLVM has one.
+  TransLoadKind kind = TransLoadKind::None;
+  if (has(FEAT_GFX1250_INSTS))
+    kind = TransLoadKind::Gfx1250;
+  else if (has(FEAT_GFX950_INSTS))
+    kind = TransLoadKind::Gfx950;
+
   for (const auto &config : configs) {
-    if (config.isaFamily == isaFamily && config.bitWidth == bitWidth) {
+    if (config.kind == kind && config.bitWidth == bitWidth) {
       return LDSTransLoadParams{
           config.instBitWidth, config.instBitWidth / config.bitWidth,
           config.leadingRegBases, config.leadingLaneBases};
@@ -161,55 +170,56 @@ TargetFeatures::queryLDSTransLoadParams(int bitWidth) const {
   return std::nullopt;
 }
 
-bool TargetFeatures::supportsDirectToLdsScatter() const { return isCDNA5(); }
+bool TargetFeatures::supportsDirectToLdsScatter() const {
+  // Only the async LDS loads take a per-lane LDS address.
+  return has(FEAT_ASYNC_LOAD_TO_LDS_INSTS);
+}
 
 bool TargetFeatures::supportsDirectToLdsLoadBitWidth(int bitWidth) const {
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA3:
-    // Disable 8 and 16 bits because they get extended to 32 bit.
-    return llvm::is_contained({32, /*16, 8*/}, bitWidth);
-  case ISAFamily::CDNA4:
-    // Disable 8, 16, 96 bits because they get extended to 32/128 bit.
-    return llvm::is_contained({128, /*96, */ 32, /*16, 8*/}, bitWidth);
-  case ISAFamily::CDNA5:
+  if (has(FEAT_ASYNC_LOAD_TO_LDS_INSTS)) {
     // Disable 8, 16 bits because they get extended to 32 bit and therefore
     // overwrite. 96 is not a pow2 and generally not useful in Triton.
     return llvm::is_contained({128, 64, /*96, */ 32, /*16, 8*/}, bitWidth);
-  default:
-    break;
   }
-
+  if (has(FEAT_VMEM_TO_LDS_LOAD_INSTS)) {
+    // 8/16 bits get extended to 32 and 96 to 128, so they are disabled.
+    if (bitWidth == 128)
+      return has(FEAT_GFX950_INSTS);
+    return llvm::is_contained({32, /*16, 8*/}, bitWidth);
+  }
   return false;
 }
 
 bool TargetFeatures::supportsDirectFromLdsStoreBitWidth(int bitWidth) const {
-  if (getISAFamily() == ISAFamily::CDNA5) {
+  if (has(FEAT_ASYNC_STORE_FROM_LDS_INSTS))
     return llvm::is_contained({128, 64, 32, 8}, bitWidth);
-  }
   return false;
 }
 
 bool TargetFeatures::supportsBufferLoadToLocal() const {
-  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
-                            getISAFamily());
+  return has(FEAT_VMEM_TO_LDS_LOAD_INSTS);
 }
 
+// The LDS DMA loads write LDS through M0, which alias analysis cannot see, and
+// complete under vmcnt alongside ordinary loads.
 bool TargetFeatures::requiresAliasInfoForAsyncOps() const {
-  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
-                            getISAFamily());
+  return has(FEAT_VMEM_TO_LDS_LOAD_INSTS) && !has(FEAT_ASYNCCNT);
 }
 
 bool TargetFeatures::useAsyncMarks() const {
-  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
-                            getISAFamily());
+  // TODO: Use asyncmarks for the asynccnt-based loads of gfx1250+ as well.
+  return has(FEAT_VMEM_TO_LDS_LOAD_INSTS) && !has(FEAT_ASYNCCNT);
 }
 
-bool TargetFeatures::supportsTDM() const { return isCDNA5(); }
+bool TargetFeatures::supportsTDM() const { return has(FEAT_TDM_INSTS); }
 
-bool TargetFeatures::supportsMultiCTALaunch() const { return isCDNA5(); }
+bool TargetFeatures::supportsMultiCTALaunch() const {
+  return has(FEAT_CLUSTERS);
+}
 
 bool TargetFeatures::supportsMulticast() const {
-  return isCDNA5() && !isGFX1250Strict();
+  // LLVM forces the gfx1250-strict multicast mask to zero.
+  return has(FEAT_MCAST_LOAD_INSTS) && !isGFX1250Strict();
 }
 
 unsigned TargetFeatures::getMaxMulticastMaskPopcount() const {
@@ -224,37 +234,31 @@ bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
 }
 
 bool TargetFeatures::supportsBufferAtomicRMW() const {
-  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4,
-                             ISAFamily::RDNA3, ISAFamily::RDNA4m,
-                             ISAFamily::RDNA4, ISAFamily::CDNA5},
-                            getISAFamily());
+  // Every gfx9+ target has the integer buffer atomics, but the fences and
+  // cache-policy bits the buffer atomic lowering emits follow the gfx942 and
+  // gfx11+ memory models, so gfx90a and older keep the generic lowering.
+  return has(FEAT_GFX940_INSTS) || has(FEAT_GFX11_INSTS);
 }
 
 bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
-  auto isaFamily = getISAFamily();
-  if (isaFamily == ISAFamily::CDNA3 && elementType.isBF16())
-    return false;
-  if (isaFamily == ISAFamily::RDNA3 && !elementType.isF32())
-    return false;
-  if (isaFamily == ISAFamily::RDNA4m)
-    return elementType.isF32();
-  if (isaFamily == ISAFamily::RDNA4 && elementType.isF64())
-    return false;
-  return true;
+  // Atomics with users need the returning form.
+  if (elementType.isF32())
+    return has(FEAT_ATOMIC_FADD_RTN_INSTS);
+  if (elementType.isF16())
+    return has(FEAT_ATOMIC_BUFFER_GLOBAL_PK_ADD_F16_INSTS);
+  if (elementType.isBF16())
+    return has(FEAT_ATOMIC_BUFFER_PK_ADD_BF16_INST);
+  if (elementType.isF64())
+    return has(FEAT_FLAT_BUFFER_GLOBAL_FADD_F64_INST);
+  return false;
 }
 
 bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
-  auto isaFamily = getISAFamily();
-  if (elementType.isF32()) {
-    return llvm::is_contained({ISAFamily::RDNA3, ISAFamily::RDNA4m,
-                               ISAFamily::RDNA4, ISAFamily::CDNA5},
-                              isaFamily);
-  }
-  if (elementType.isF64()) {
-    return llvm::is_contained({ISAFamily::CDNA2, ISAFamily::CDNA3,
-                               ISAFamily::CDNA4, ISAFamily::CDNA5},
-                              isaFamily);
-  }
+  // LLVM gates the buffer forms on the global forms' features.
+  if (elementType.isF32())
+    return has(FEAT_ATOMIC_FMIN_FMAX_GLOBAL_F32);
+  if (elementType.isF64())
+    return has(FEAT_ATOMIC_FMIN_FMAX_GLOBAL_F64);
   return false;
 }
 
@@ -264,73 +268,71 @@ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
   int32_t aux = 0;
   if (hasUsers)
     aux |= sc0Bit;
-  if (getISAFamily() == ISAFamily::CDNA5)
+  // gfx12 agent-scope atomics need SCOPE_DEV.
+  if (has(FEAT_GFX12_INSTS))
     aux |= scopeDevBit;
   return aux;
 }
 
 bool TargetFeatures::supportMaximumMinimum() const {
-  return getISAFamily() == ISAFamily::CDNA4 ||
-         getISAFamily() == ISAFamily::RDNA4m ||
-         getISAFamily() == ISAFamily::RDNA4 ||
-         getISAFamily() == ISAFamily::CDNA5;
+  // TODO(llvm): Query IEEEMinimumMaximumInsts/Minimum3Maximum3F32 once exposed.
+  return has(FEAT_GFX950_INSTS) || has(FEAT_GFX12_INSTS) ||
+         getISAFamily() == ISAFamily::RDNA4m;
 }
 
 bool TargetFeatures::supportDppBroadcast() const {
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA2:
-  case ISAFamily::CDNA3:
-  case ISAFamily::CDNA4:
-    return true;
-  case ISAFamily::CDNA5:
-    return false;
-  default:
-    return false;
-  }
+  return info.isGeneration(9);
 }
 
-bool TargetFeatures::supportsPermlaneSwap() const {
-  return getISAFamily() == ISAFamily::CDNA4 ||
-         getISAFamily() == ISAFamily::CDNA5;
+bool TargetFeatures::supportsPermlane16Swap() const {
+  return has(FEAT_PERMLANE16_SWAP);
 }
 
-bool TargetFeatures::supportsCvtPkScalePk8() const { return isCDNA5(); }
+bool TargetFeatures::supportsPermlane32Swap() const {
+  return has(FEAT_PERMLANE32_SWAP);
+}
+
+bool TargetFeatures::supportsCvtPkScalePk8() const {
+  // LLVM gates v_cvt_scale_pk8_* on gfx1250-insts.
+  return has(FEAT_GFX1250_INSTS);
+}
 
 bool TargetFeatures::supportsCvtPkScalePk8Upcast() const {
   return supportsCvtPkScalePk8();
 }
 
 bool TargetFeatures::supportsCvtPkScalePk8Block16() const {
-  return supportsCvtPkScalePk8() && !isGFX1250Strict();
+  return supportsCvtPkScalePk8() && has(FEAT_BLOCK16_CVT_SCALE_INSTS);
 }
 
 ArrayRef<StringRef> TargetFeatures::getUnsupportedWmmaFeatures() const {
+  // gfx1250-strict restricts more WMMA instructions than LLVM's feature bits
+  // (wmma-f4-insts, wmma-16x16x128fp8-insts) describe, so this stays keyed on
+  // the processor.
   static const StringRef kGFX1250Strict[] = {kWmmaRestrictedInstsFeature};
   if (isGFX1250Strict())
     return kGFX1250Strict;
   return {};
 }
 
+bool TargetFeatures::hasScaledPkCvtInsts() const {
+  return has(FEAT_FP8_CVT_SCALE_INSTS) && has(FEAT_BF8_CVT_SCALE_INSTS) &&
+         has(FEAT_FP4_CVT_SCALE_INSTS);
+}
+
 bool TargetFeatures::supportsHwScaledUpcast() const {
-  return getISAFamily() == ISAFamily::CDNA4 || supportsCvtPkScalePk8Upcast();
+  return hasScaledPkCvtInsts() || supportsCvtPkScalePk8Upcast();
 }
 
 bool TargetFeatures::supportsHwScaledDowncast() const {
-  return getISAFamily() == ISAFamily::CDNA4 || supportsCvtPkScalePk8();
+  return hasScaledPkCvtInsts() || supportsCvtPkScalePk8();
 }
 
 bool TargetFeatures::supportBitwidth16Elementwise() const { return true; }
 
 bool TargetFeatures::supportBitwidth32Elementwise() const {
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA2:
-  case ISAFamily::CDNA3:
-  case ISAFamily::CDNA4:
-  case ISAFamily::CDNA5:
-    return true;
-  default:
-    return false;
-  }
+  // TODO(llvm): Query PackedFP32Ops once exposed.
+  return has(FEAT_GFX90A_INSTS) || has(FEAT_GFX1250_INSTS);
 }
 
 bool isCDNA(ISAFamily isaFamily) {
