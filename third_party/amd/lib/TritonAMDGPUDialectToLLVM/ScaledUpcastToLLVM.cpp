@@ -329,7 +329,7 @@ struct ScaledUpcastFp4OpPattern
     } else {
       // Software emulation: upcast fp4 via LUT, then multiply by scale.
       bool toFp16 = elemType.isF16();
-      auto isaFamily = targetInfo.getISAFamily();
+      const auto &features = targetInfo.getTargetFeatures();
       for (size_t i = 0; i < inputVals.size(); i += 4) {
         Value packedVec = b.undef(vec_ty(i8_ty, 4));
         for (int j : llvm::seq(4))
@@ -337,7 +337,7 @@ struct ScaledUpcastFp4OpPattern
               b.insert_element(packedVec, inputVals[i + j], b.i32_val(j));
 
         SmallVector<Value> v8vals =
-            upcast8xMxfp4_SW(rewriter, upcastOp, toFp16, packedVec, isaFamily);
+            upcast8xMxfp4_SW(rewriter, upcastOp, toFp16, packedVec, features);
 
         Value scaleF32 = scaleToF32(
             rewriter, loc, scaleVals[groupScaleReg[i / 4]], preShifted);

@@ -1,4 +1,5 @@
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,CU
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1310 | FileCheck %s --check-prefixes=CHECK,CU
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm="gfx-arch=gfx1201 cu-mode=true" | FileCheck %s --check-prefixes=CHECK,CU
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1201 | FileCheck %s --check-prefixes=CHECK,WGP
 

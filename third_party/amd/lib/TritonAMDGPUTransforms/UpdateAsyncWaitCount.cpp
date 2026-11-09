@@ -445,7 +445,8 @@ struct TritonAMDGPUUpdateAsyncWaitCountPass
 
   void runOnOperation() override {
     TargetFeatures targetFeatures{llvm::StringRef(gfxArch)};
-    if (!targetFeatures.isCDNA() && !targetFeatures.isCDNA5()) {
+    if (!targetFeatures.supportsBufferLoadToLocal() &&
+        !targetFeatures.supportsDirectToLdsScatter()) {
       return;
     }
 

@@ -53,10 +53,8 @@ bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
   if (!triton::canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis))
     return false;
 
-  using tt::amdgpu::ISAFamily;
-  bool hasDirectToLdsPath =
-      llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4, ISAFamily::CDNA5},
-                         targetInfo.getISAFamily());
+  bool hasDirectToLdsPath = targetInfo.supportsBufferLoadToLocal() ||
+                            targetInfo.supportsDirectToLdsScatter();
 
   // On targets without scatter support, reject CTA tiles that are too small to
   // provide one 32-bit direct-to-LDS write per lane. Layout-specific coalescing

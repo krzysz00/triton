@@ -14,7 +14,7 @@ SmallVector<Value> convertFp32ToF16rtne(Location loc,
                                         ConversionPatternRewriter &rewriter,
                                         Type inElemTy, Type outElemTy,
                                         gpu::MultipleOperandsRange operands,
-                                        amdgpu::ISAFamily isaFamily);
+                                        const amdgpu::TargetFeatures &features);
 } // namespace mlir::triton::AMD
 
 #endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_CONVERTFPCASTOPTOLLVM_H_

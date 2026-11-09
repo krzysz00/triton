@@ -31,25 +31,8 @@ Value TargetInfo::clock(ConversionPatternRewriter &rewriter, Location loc,
 
 Value TargetInfo::globalTime(ConversionPatternRewriter &rewriter,
                              Location loc) const {
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  Value globalTimeVal;
-  if (getTritonTargetInfo().getISAFamily() ==
-      triton::amdgpu::ISAFamily::CDNA5) {
-    Value msg = b.i32_val(/*MSG_RTN_GET_REALTIME=*/131);
-    globalTimeVal =
-        LLVM::createLLVMIntrinsicCallOp(
-            rewriter, loc, "llvm.amdgcn.s.sendmsg.rtn.i64", i64_ty, {msg})
-            .getResult(0);
-  } else {
-    StringRef globalTimeIntrinsicName = "llvm.amdgcn.s.memrealtime";
-    globalTimeVal = LLVM::createLLVMIntrinsicCallOp(
-                        rewriter, loc, globalTimeIntrinsicName, i64_ty, {})
-                        .getResult(0);
-  }
-  // The clock-generator runs at 100 MHz ==> 10 ns per clock.
-  // Reference: Section 3.4.11 in the RDNA4 ISA manual
-  // https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
-  return b.mul(globalTimeVal, b.i64_val(10));
+  // Reads the 100 MHz real-time counter, in nanoseconds.
+  return getTritonTargetInfo().getGlobalTimer(rewriter, loc);
 }
 
 // Reads `size` bits starting at bit `offset` of hardware register `id` via
@@ -138,8 +121,8 @@ Value TargetInfo::processorId(ConversionPatternRewriter &rewriter,
   // Granularity is per-WGP, not per-CU: the CU-within-WGP bit
   // (HW_ID1.SIMD_ID[0]) is intentionally omitted; add it if sub-WGP resolution
   // is ever needed.
-  if (getTritonTargetInfo().getISAFamily() ==
-      triton::amdgpu::ISAFamily::CDNA5) {
+  if (getTritonTargetInfo().getTargetFeatures().has(
+          llvm::AMDGPU::FEAT_GFX1250_INSTS)) {
     Value msg = b.i32_val(/*MSG_RTN_GET_SE_AID_ID=*/135);
     Value seAid =
         LLVM::createLLVMIntrinsicCallOp(

@@ -66,7 +66,9 @@ TEST(TargetFeaturesSpellingTest, ClassifiesGenericTargets) {
       {"gfx9-generic", ISAFamily::Unknown},
       {"gfx908", ISAFamily::Unknown},
       {"gfx1030", ISAFamily::Unknown},
-      {"gfx1310", ISAFamily::Unknown},
+      // gfx13 takes the gfx1250 paths until it needs its own.
+      {"gfx1310", ISAFamily::CDNA5},
+      {"gfx13-generic", ISAFamily::CDNA5},
   };
   for (const auto &c : cases) {
     TargetFeatures features{StringRef(c.arch)};

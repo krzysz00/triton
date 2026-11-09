@@ -12,6 +12,7 @@
 namespace tt = mlir::triton;
 using mlir::triton::ModuleAxisInfoAnalysis;
 using mlir::triton::amdgpu::ISAFamily;
+using mlir::triton::amdgpu::TargetFeatures;
 using mlir::triton::gpu::appendOrGetExternFuncOp;
 
 namespace mlir::LLVM::AMD {
@@ -81,8 +82,8 @@ Value emitPermlaneSwapXor(Location loc, RewriterBase &rewriter, Value val,
 }
 
 Value shuffleCommonImpl(Location loc, RewriterBase &rewriter,
-                        ISAFamily isaFamily, Value val, Value i, int strideInt,
-                        ShflKind mode, Value clamp) {
+                        const TargetFeatures &features, Value val, Value i,
+                        int strideInt, ShflKind mode, Value clamp) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   unsigned bits = val.getType().getIntOrFloatBitWidth();
 
@@ -95,7 +96,7 @@ Value shuffleCommonImpl(Location loc, RewriterBase &rewriter,
     if (bits < 32)
       val = b.sext(i32_ty, val);
 
-    val = shuffleCommonImpl(loc, rewriter, isaFamily, val, i, strideInt, mode,
+    val = shuffleCommonImpl(loc, rewriter, features, val, i, strideInt, mode,
                             clamp);
 
     if (bits < 32)
@@ -110,9 +111,9 @@ Value shuffleCommonImpl(Location loc, RewriterBase &rewriter,
     Value vec = b.bitcast(val, vecTy);
     Value val0 = b.extract_element(f32_ty, vec, b.i32_val(0));
     Value val1 = b.extract_element(f32_ty, vec, b.i32_val(1));
-    val0 = shuffleCommonImpl(loc, rewriter, isaFamily, val0, i, strideInt, mode,
+    val0 = shuffleCommonImpl(loc, rewriter, features, val0, i, strideInt, mode,
                              clamp);
-    val1 = shuffleCommonImpl(loc, rewriter, isaFamily, val1, i, strideInt, mode,
+    val1 = shuffleCommonImpl(loc, rewriter, features, val1, i, strideInt, mode,
                              clamp);
     vec = b.undef(vecTy);
     vec = b.insert_element(vecTy, vec, val0, b.i32_val(0));
@@ -160,16 +161,19 @@ Value shuffleCommonImpl(Location loc, RewriterBase &rewriter,
         ctrlBits |= (lane ^ quadMask) << (lane * 2);
       return static_cast<DppCtrl>(ctrlBits);
     };
-    bool usePermlaneSwap = isaFamily == ISAFamily::CDNA4 && (mask & 0x30);
+    bool usePermlaneSwap =
+        (mask & 0x30) && (!(mask & 16) || features.supportsPermlane16Swap()) &&
+        (!(mask & 32) || features.supportsPermlane32Swap());
 
-    if (triton::amdgpu::isRDNA(isaFamily) || isaFamily == ISAFamily::CDNA5) {
+    using namespace llvm::AMDGPU;
+    // gfx10 added DPP row_xmask and v_permlanex16.
+    if (features.has(FEAT_GFX10_INSTS)) {
       if (mask < 16)
         return emitDpp(loc, rewriter, val, val,
                        makeDppCtrl(DppCtrl::ROW_XMASK0, mask));
       else if (mask < 32)
         return emitPermlaneX16Xor(loc, rewriter, val, mask & 0xf);
-    } else if (triton::amdgpu::isCDNA(isaFamily) &&
-               (mask < 16 || usePermlaneSwap)) {
+    } else if (features.has(FEAT_DPP) && (mask < 16 || usePermlaneSwap)) {
       Value result = val;
       uint32_t highBitsDppBasis = 0;
 
@@ -221,15 +225,15 @@ Value shuffleCommonImpl(Location loc, RewriterBase &rewriter,
   return Value();
 }
 
-Value shuffleCommon(Location loc, RewriterBase &rewriter, ISAFamily isaFamily,
-                    Value val, Value i, int strideInt, ShflKind mode,
-                    Value clamp) {
+Value shuffleCommon(Location loc, RewriterBase &rewriter,
+                    const TargetFeatures &features, Value val, Value i,
+                    int strideInt, ShflKind mode, Value clamp) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   // To shuffle pointers, convert them to i64.
   Type valTy = val.getType();
   if (isa<LLVM::LLVMPointerType>(valTy))
     val = b.ptrtoint(i64_ty, val);
-  Value result = shuffleCommonImpl(loc, rewriter, isaFamily, val, i, strideInt,
+  Value result = shuffleCommonImpl(loc, rewriter, features, val, i, strideInt,
                                    mode, clamp);
   if (isa<LLVM::LLVMPointerType>(valTy))
     result = b.inttoptr(valTy, result);
@@ -239,22 +243,22 @@ Value shuffleCommon(Location loc, RewriterBase &rewriter, ISAFamily isaFamily,
 } // namespace
 
 Value shuffleXor(Location loc, RewriterBase &rewriter, Value val, int i,
-                 ISAFamily isaFamily) {
+                 const TargetFeatures &features) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  return shuffleCommon(loc, rewriter, isaFamily, val, b.i32_val(i), i,
+  return shuffleCommon(loc, rewriter, features, val, b.i32_val(i), i,
                        ShflKind::bfly, b.i32_val(0x1f));
 }
 
 Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, int i,
-                 ISAFamily isaFamily) {
+                 const TargetFeatures &features) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  return shuffleIdx(loc, rewriter, val, b.i32_val(i), isaFamily);
+  return shuffleIdx(loc, rewriter, val, b.i32_val(i), features);
 }
 
 Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, Value i,
-                 ISAFamily isaFamily) {
+                 const TargetFeatures &features) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  return shuffleCommon(loc, rewriter, isaFamily, val, i, 0, ShflKind::idx,
+  return shuffleCommon(loc, rewriter, features, val, i, 0, ShflKind::idx,
                        b.i32_val(0x1f));
 }
 
@@ -703,20 +707,18 @@ static int32_t getDefaultCtrlBitsForCacheModifier(triton::CacheModifier cm) {
 int32_t getCtrlBitsForCacheModifierOnTarget(
     triton::CacheModifier cm, bool isLoad,
     const mlir::triton::AMD::TargetInfo &targetInfo) {
-  switch (targetInfo.getISAFamily()) {
-  case ISAFamily::CDNA3:
-  case ISAFamily::CDNA4:
+  using namespace llvm::AMDGPU;
+  const ROCDL::TargetInfo &info =
+      targetInfo.getTargetFeatures().getTargetInfo();
+  // gfx940 replaced gfx9's GLC/SLC bits with SC0/SC1/NT.
+  if (info.has(FEAT_GFX940_INSTS))
     return getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(cm, isLoad);
-  case ISAFamily::RDNA3:
-  case ISAFamily::RDNA4m:
+  if (info.isGeneration(11))
     return getCtrlBitsForCacheModifierOnRDNA3(cm, isLoad);
-  case ISAFamily::RDNA4:
-    return getCtrlBitsForCacheModifierOn_GFX12(cm, isLoad, /*$ bypass*/ false);
-  case ISAFamily::CDNA5:
-    return getCtrlBitsForCacheModifierOn_GFX12(cm, isLoad, /*$ bypass*/ true);
-  default:
-    return getDefaultCtrlBitsForCacheModifier(cm);
-  }
+  if (info.has(FEAT_GFX12_INSTS))
+    return getCtrlBitsForCacheModifierOn_GFX12(
+        cm, isLoad, /*cacheBypassAvailable=*/info.has(FEAT_GFX1250_INSTS));
+  return getDefaultCtrlBitsForCacheModifier(cm);
 }
 
 FailureOr<int32_t>
@@ -724,11 +726,15 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
                            std::optional<triton::MemSyncScope> scope,
                            bool isLoad,
                            const mlir::triton::AMD::TargetInfo &targetInfo) {
-  const bool isGfx9 = llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
-                                         targetInfo.getISAFamily());
-  const bool isGfx12 = llvm::is_contained({ISAFamily::RDNA4, ISAFamily::CDNA5},
-                                          targetInfo.getISAFamily());
-  const bool isCDNA5 = targetInfo.getISAFamily() == ISAFamily::CDNA5;
+  const ROCDL::TargetInfo &info =
+      targetInfo.getTargetFeatures().getTargetInfo();
+  // The SC0/SC1/NT encoding of gfx940+ and the SCOPE/TH encoding of gfx12.
+  const bool isGfx9 = info.has(llvm::AMDGPU::FEAT_GFX940_INSTS);
+  const bool isGfx12 = info.has(llvm::AMDGPU::FEAT_GFX12_INSTS);
+  // Whether a workgroup's waves always share a cache at CU scope: on gfx1250 a
+  // workgroup runs on one WGP.
+  const bool workgroupSharesCUScope =
+      info.has(llvm::AMDGPU::FEAT_GFX1250_INSTS) || targetInfo.isCuMode();
   int32_t aux = 0;
   if (auto gfx9Policy =
           dyn_cast_if_present<triton::amdgpu::CachePolicyGfx9Attr>(
@@ -779,7 +785,7 @@ getBufferLoadStoreCtrlBits(Operation *op, Attribute cachePolicy,
               scopeSys = 3 << scopeShift;
     switch (*scope) {
     case triton::MemSyncScope::CTA:
-      return isCDNA5 || targetInfo.isCuMode() ? aux : aux | scopeSE;
+      return workgroupSharesCUScope ? aux : aux | scopeSE;
     case triton::MemSyncScope::GPU:
       return aux | scopeDev;
     case triton::MemSyncScope::SYSTEM:
@@ -1168,7 +1174,7 @@ Value convertF8ToF32_SW(RewriterBase &rewriter, Location loc, Value fp8Val,
 
 SmallVector<Value> upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op,
                                     bool toFp16, Value packedVec,
-                                    ISAFamily isaFamily) {
+                                    const TargetFeatures &features) {
   assert((isa<triton::gpu::Fp4ToFpOp, triton::amdgpu::ScaledUpcastFp4Op>(op)) &&
          "Expected Fp4ToFpOp or ScaledUpcastFp4Op");
   Location loc = op->getLoc();
@@ -1182,8 +1188,8 @@ SmallVector<Value> upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op,
   // | e7e6 | e5e4 | e3e2 | e1e0 |
   Value input = b.bitcast(packedVec, i32_ty);
 
-  // fp4 to bf16 for cdna3: fp4->fp8->fp32
-  if (isaFamily == ISAFamily::CDNA3 && !toFp16) {
+  // fp4 to bf16 on targets with FNUZ fp8 conversions: fp4->fp8->fp32
+  if (features.getTargetInfo().hasFnuzFp8() && !toFp16) {
     // Step 1: extract EM bits for elements 0,2,4,6 and 1,3,5,7 respectively.
     // e2m1_6420_idx = | 0[0e6EM] | 0[0e4EM] | 0[0e2EM] | 0[0e0EM] |
     Value e2m1_6420_idx = b.and_(input, b.i32_val(0x07070707));

@@ -7,6 +7,8 @@
 #include <tuple>
 
 namespace mlir {
+using triton::amdgpu::kWmma16x16x128Fp8InstsFeature;
+using triton::amdgpu::kWmmaF4InstsFeature;
 using triton::amdgpu::kWmmaRestrictedInstsFeature;
 
 namespace {
@@ -149,13 +151,13 @@ WmmaDatabase::WmmaDatabase(MLIRContext *context) {
       // wmma_f32_16x16x128_fp8_fp8 & wmma_f32_16x16x64_fp8_fp8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpFp8T, ocpFp8T, 8, f32T,
                                   "llvm.amdgcn.wmma.f32.16x16x128.fp8.fp8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f32.16x16x64.fp8.fp8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f16_16x16x128_fp8_fp8 & wmma_f16_16x16x64_fp8_fp8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpFp8T, ocpFp8T, 8, f16T,
                                   "llvm.amdgcn.wmma.f16.16x16x128.fp8.fp8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f16.16x16x64.fp8.fp8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f32_16x16x16_fp8_bf8
@@ -164,13 +166,13 @@ WmmaDatabase::WmmaDatabase(MLIRContext *context) {
       // wmma_f32_16x16x128_fp8_bf8 & wmma_f32_16x16x64_fp8_bf8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpFp8T, ocpBf8T, 8, f32T,
                                   "llvm.amdgcn.wmma.f32.16x16x128.fp8.bf8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f32.16x16x64.fp8.bf8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f16_16x16x128_fp8_bf8 & wmma_f16_16x16x64_fp8_bf8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpFp8T, ocpBf8T, 8, f16T,
                                   "llvm.amdgcn.wmma.f16.16x16x128.fp8.bf8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f16.16x16x64.fp8.bf8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f32_16x16x16_bf8_fp8
@@ -179,13 +181,13 @@ WmmaDatabase::WmmaDatabase(MLIRContext *context) {
       // wmma_f32_16x16x128_bf8_fp8 & wmma_f32_16x16x64_bf8_fp8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpBf8T, ocpFp8T, 8, f32T,
                                   "llvm.amdgcn.wmma.f32.16x16x128.bf8.fp8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f32.16x16x64.bf8.fp8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f16_16x16x128_bf8_fp8 & wmma_f16_16x16x64_bf8_fp8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpBf8T, ocpFp8T, 8, f16T,
                                   "llvm.amdgcn.wmma.f16.16x16x128.bf8.fp8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f16.16x16x64.bf8.fp8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f32_16x16x16_bf8_bf8
@@ -194,13 +196,13 @@ WmmaDatabase::WmmaDatabase(MLIRContext *context) {
       // wmma_f32_16x16x128_bf8_bf8 & wmma_f32_16x16x64_bf8_bf8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpBf8T, ocpBf8T, 8, f32T,
                                   "llvm.amdgcn.wmma.f32.16x16x128.bf8.bf8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f32.16x16x64.bf8.bf8", 64,
                                   32, kWmmaRestrictedInstsFeature),
       // wmma_f16_16x16x128_bf8_bf8 & wmma_f16_16x16x64_bf8_bf8
       TRITON_WMMA_v_2case_feature(3, 16, 16, ocpBf8T, ocpBf8T, 8, f16T,
                                   "llvm.amdgcn.wmma.f16.16x16x128.bf8.bf8", 128,
-                                  64, kWmmaRestrictedInstsFeature,
+                                  64, kWmma16x16x128Fp8InstsFeature,
                                   "llvm.amdgcn.wmma.f16.16x16x64.bf8.bf8", 64,
                                   32, kWmmaRestrictedInstsFeature),
 
@@ -357,17 +359,18 @@ WmmaScaleDatabase::WmmaScaleDatabase(MLIRContext *context) {
       TRITON_WMMA_SCALE_v_feature(3, 32, 16, f32T, 0u /*isScale16*/,
                                   WmmaScaleIntrinsic::IntrinsicFamily::F4,
                                   "llvm.amdgcn.wmma.scale.f32.32x16x128.f4",
-                                  128, kWmmaRestrictedInstsFeature),
+                                  128, kWmmaF4InstsFeature),
       TRITON_WMMA_SCALE_v_feature(3, 32, 16, f32T, 1u,
                                   WmmaScaleIntrinsic::IntrinsicFamily::F4,
                                   "llvm.amdgcn.wmma.scale16.f32.32x16x128.f4",
-                                  128, kWmmaRestrictedInstsFeature),
+                                  128, kWmmaF4InstsFeature),
   };
 }
 
 static std::pair<unsigned, unsigned>
 kBaseForWmmaScale(Type aElemType, Type bElemType, unsigned mDim, unsigned nDim,
                   unsigned kDim) {
+  // The scaled WMMA instructions only exist on gfx1250, which only runs wave32.
   constexpr unsigned warpSize = 32;
   unsigned packedKA = llvm::isa<Float4E2M1FNType>(aElemType) ? kDim / 2 : kDim;
   unsigned packedKB = llvm::isa<Float4E2M1FNType>(bElemType) ? kDim / 2 : kDim;

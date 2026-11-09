@@ -34,15 +34,16 @@ enum class DppCtrl : uint32_t {
 
 enum class MemoryOp { Load, Store };
 
+// With an unknown target, shuffles fall back to ds_bpermute.
 Value shuffleXor(Location loc, RewriterBase &rewriter, Value val, int i,
-                 mlir::triton::amdgpu::ISAFamily isaFamily =
-                     mlir::triton::amdgpu::ISAFamily::Unknown);
+                 const mlir::triton::amdgpu::TargetFeatures &features =
+                     mlir::triton::amdgpu::TargetFeatures(std::nullopt));
 Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, int i,
-                 mlir::triton::amdgpu::ISAFamily isaFamily =
-                     mlir::triton::amdgpu::ISAFamily::Unknown);
+                 const mlir::triton::amdgpu::TargetFeatures &features =
+                     mlir::triton::amdgpu::TargetFeatures(std::nullopt));
 Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, Value i,
-                 mlir::triton::amdgpu::ISAFamily isaFamily =
-                     mlir::triton::amdgpu::ISAFamily::Unknown);
+                 const mlir::triton::amdgpu::TargetFeatures &features =
+                     mlir::triton::amdgpu::TargetFeatures(std::nullopt));
 
 Value permute(Location loc, RewriterBase &rewriter, Value a, Value b,
               Value selector);
@@ -149,9 +150,10 @@ Value convertF8ToF32_SW(RewriterBase &rewriter, Location loc, Value fp8Val,
 
 // Software implementation of converting an 8-element vector of MXFP4 elements
 // to a wider type: BF16 or FP16 for target before CDNA4.
-SmallVector<Value> upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op,
-                                    bool toFp16, Value packedVec,
-                                    mlir::triton::amdgpu::ISAFamily isaFamily);
+SmallVector<Value>
+upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op, bool toFp16,
+                 Value packedVec,
+                 const mlir::triton::amdgpu::TargetFeatures &features);
 
 } // namespace mlir::LLVM::AMD
 

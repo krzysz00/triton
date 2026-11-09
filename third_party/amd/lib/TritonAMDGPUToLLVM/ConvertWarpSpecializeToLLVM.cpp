@@ -199,8 +199,9 @@ struct TritonAMDGPUConvertWarpSpecializeToLLVM
     }
 
     AMD::TargetInfo targetInfo(archStr.c_str());
-    if (targetInfo.getISAFamily() != triton::amdgpu::ISAFamily::CDNA5) {
-      mod.emitError("Warp specialization is only supported on CDNA5, got ")
+    // TODO(llvm): Query the named barrier count; this needs gfx1250's 16.
+    if (!targetInfo.getTargetFeatures().has(llvm::AMDGPU::FEAT_GFX1250_INSTS)) {
+      mod.emitError("Warp specialization needs gfx1250's named barriers, got ")
           << archStr;
       return signalPassFailure();
     }

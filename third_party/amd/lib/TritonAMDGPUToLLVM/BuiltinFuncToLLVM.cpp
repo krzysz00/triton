@@ -118,7 +118,7 @@ private:
     } else if (calleeName == "__triton_hip_fast_tanhf") {
       assert(operands.size() == 1);
       assert(operands[0].getType().getIntOrFloatBitWidth() == 32);
-      if (targetInfo.getISAFamily() == triton::amdgpu::ISAFamily::CDNA5) {
+      if (targetInfo.getTargetFeatures().has(llvm::AMDGPU::FEAT_TANH_INSTS)) {
         const char *intrinsic = "llvm.amdgcn.tanh.f32";
         replacementOp = LLVM::createLLVMIntrinsicCallOp(
             rewriter, loc, intrinsic, returnType, operands[0]);

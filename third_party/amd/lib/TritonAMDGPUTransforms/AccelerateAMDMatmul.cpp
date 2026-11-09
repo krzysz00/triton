@@ -29,39 +29,36 @@ using ::mlir::LLVM::AMD::scaleDotElemTypeToMLIRType;
 namespace mlir {
 
 namespace {
-using triton::amdgpu::ISAFamily;
 using triton::amdgpu::TargetFeatures;
 
 constexpr char AttrDecomposedDotScaledSource[] =
     "amdg.decomposed_dot_scaled_source";
 
-int getMfmaVersion(ISAFamily isaFamily) {
-  switch (isaFamily) {
-  case ISAFamily::CDNA2:
-    return 2;
-  case ISAFamily::CDNA3:
-    return 3;
-  case ISAFamily::CDNA4:
+// The MFMA table version, or 0 if the tables do not cover the target.
+int getMfmaVersion(const TargetFeatures &targetFeatures) {
+  using namespace llvm::AMDGPU;
+  if (!targetFeatures.has(FEAT_MAI_INSTS))
+    return 0;
+  if (targetFeatures.has(FEAT_GFX950_INSTS))
     return 4;
-  default:
-    break;
-  }
+  if (targetFeatures.has(FEAT_GFX940_INSTS))
+    return 3;
+  if (targetFeatures.has(FEAT_GFX90A_INSTS))
+    return 2;
+  // The MFMA tables do not describe gfx908's instructions.
   return 0;
 }
 
-int getWmmaVersion(ISAFamily isaFamily) {
-  switch (isaFamily) {
-  case ISAFamily::RDNA3:
-    return 1;
-  case ISAFamily::RDNA4m:
-  case ISAFamily::RDNA4:
-    return 2;
-  case ISAFamily::CDNA5:
+// The WMMA table version, or 0 if the tables do not cover the target.
+int getWmmaVersion(const TargetFeatures &targetFeatures) {
+  using namespace llvm::AMDGPU;
+  const ROCDL::TargetInfo &info = targetFeatures.getTargetInfo();
+  if (info.has(FEAT_GFX1250_INSTS))
     return 3;
-  default:
-    break;
-  }
-
+  if (info.has(FEAT_WMMA_128B_INSTS))
+    return 2;
+  if (info.has(FEAT_WMMA_256B_INSTS))
+    return 1;
   return 0;
 }
 
@@ -1503,10 +1500,10 @@ public:
       return true;
     }
 
-    // CDNA4 has Bf16 v_dot2
-    if (targetFeatures.isCDNA4() && dotTypes.a.isBF16() &&
-        dotTypes.b.isBF16() && dotTypes.c.isF32() && dotTypes.d.isF32() &&
-        k % 2 == 0) {
+    // Bf16 v_dot2_f32_bf16
+    if (targetFeatures.has(llvm::AMDGPU::FEAT_DOT12_INSTS) &&
+        dotTypes.a.isBF16() && dotTypes.b.isBF16() && dotTypes.c.isF32() &&
+        dotTypes.d.isF32() && k % 2 == 0) {
       return true;
     }
 
@@ -1643,42 +1640,32 @@ struct TritonAMDGPUAccelerateMatmulPass
 
     RewritePatternSet mfmaPatterns(context);
     TargetFeatures targetFeatures{llvm::StringRef(gfxArch)};
-    auto isaFamily = targetFeatures.getISAFamily();
-    int mfmaVersion = getMfmaVersion(isaFamily);
-    int wmmaVersion = getWmmaVersion(isaFamily);
-    ArrayRef<StringRef> unsupportedWmmaFeatures =
+    int mfmaVersion = getMfmaVersion(targetFeatures);
+    int wmmaVersion = getWmmaVersion(targetFeatures);
+    SmallVector<StringRef, 3> unsupportedWmmaFeatures =
         targetFeatures.getUnsupportedWmmaFeatures();
-    switch (isaFamily) {
-    case ISAFamily::CDNA5:
+    if (wmmaVersion == 3) {
       mfmaPatterns.add<ScaledBlockedToScaledWMMAF8F6F4>(context, wmmaVersion,
                                                         /*benefit=*/4);
       mfmaPatterns.add<DecomposeAMDScaledBlocked>(context, targetFeatures,
                                                   /*benefit=*/3);
       mfmaPatterns.add<BlockedToWMMA>(context, wmmaVersion,
                                       unsupportedWmmaFeatures, /*benefit=*/2);
-      break;
-    case ISAFamily::CDNA4:
-      mfmaPatterns.add<ScaledBlockedToScaledMFMAF8F6F4>(
-          context, mfmaVersion, matrixInstructionSize, /*benefit=*/4);
-      [[fallthrough]];
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA2:
+    } else if (mfmaVersion != 0) {
+      // The scaled f8f6f4 MFMA instructions are new in gfx950.
+      if (mfmaVersion >= 4)
+        mfmaPatterns.add<ScaledBlockedToScaledMFMAF8F6F4>(
+            context, mfmaVersion, matrixInstructionSize, /*benefit=*/4);
       mfmaPatterns.add<DecomposeAMDScaledBlocked>(context, targetFeatures,
                                                   /*benefit=*/3);
       mfmaPatterns.add<BlockedToMFMA>(context, mfmaVersion,
                                       matrixInstructionSize, kPack,
                                       /*benefit=*/2);
-      break;
-    case ISAFamily::RDNA3:
-    case ISAFamily::RDNA4m:
-    case ISAFamily::RDNA4:
+    } else if (wmmaVersion != 0) {
       mfmaPatterns.add<DecomposeAMDScaledBlocked>(context, targetFeatures,
                                                   /*benefit=*/3);
       mfmaPatterns.add<BlockedToWMMA>(context, wmmaVersion,
                                       unsupportedWmmaFeatures, /*benefit=*/2);
-      break;
-    default:
-      break;
     }
     if (applyPatternsGreedily(m, std::move(mfmaPatterns)).failed())
       signalPassFailure();

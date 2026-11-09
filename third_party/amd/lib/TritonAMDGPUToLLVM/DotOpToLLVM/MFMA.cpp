@@ -171,7 +171,7 @@ struct DotOpMFMAConversionHelper {
            "numSubBlocks in not pow 2!");
     if (numSubBlocks == 1)
       return acc;
-    constexpr int warpSize = 64;
+    int warpSize = triton::gpu::lookupThreadsPerWarp(rewriter);
     int subBlockSize = warpSize / numSubBlocks;
     Value laneId = getLaneId(rewriter, loc);
     auto vecTy = dyn_cast<VectorType>(acc.getType());

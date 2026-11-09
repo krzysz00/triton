@@ -14,6 +14,9 @@ public:
   explicit TargetInfo(std::optional<StringRef> arch, bool cuMode = false)
       : targetFeatures(arch), cuMode(cuMode) {}
 
+  const amdgpu::TargetFeatures &getTargetFeatures() const {
+    return targetFeatures;
+  }
   StringRef getArch() const { return targetFeatures.getArch(); }
   StringRef getBaseArch() const { return targetFeatures.getBaseArch(); }
   amdgpu::ISAFamily getISAFamily() const {

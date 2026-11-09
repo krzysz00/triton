@@ -11,6 +11,11 @@
 
 namespace mlir::triton::amdgpu {
 
+// WMMA table tags: LLVM's feature names, plus one for the gfx1250-strict
+// restrictions LLVM does not describe.
+inline constexpr llvm::StringLiteral kWmmaF4InstsFeature = "wmma-f4-insts";
+inline constexpr llvm::StringLiteral kWmma16x16x128Fp8InstsFeature =
+    "wmma-16x16x128fp8-insts";
 inline constexpr llvm::StringLiteral kWmmaRestrictedInstsFeature =
     "wmma-restricted-insts";
 
@@ -103,7 +108,8 @@ public:
   bool supportsCvtPkScalePk8() const;
   bool supportsCvtPkScalePk8Upcast() const;
   bool supportsCvtPkScalePk8Block16() const;
-  ArrayRef<StringRef> getUnsupportedWmmaFeatures() const;
+  // Returns the WMMA table features (see kWmma*Feature) the target lacks.
+  SmallVector<StringRef, 3> getUnsupportedWmmaFeatures() const;
   bool supportsHwScaledUpcast() const;
   bool supportsHwScaledDowncast() const;
 

@@ -21,6 +21,7 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
@@ -1682,9 +1683,10 @@ void init_gluon_ir(py::module_ &m) {
               isKContig ? SmallVector<unsigned, 2>{kDimIndex, 1u - kDimIndex}
                         : SmallVector<unsigned, 2>{1u - kDimIndex, kDimIndex};
 
+          unsigned warpSize = product(ttg::getThreadsPerWarp(mfmaEnc, shape));
           auto attr = composePaddedLayoutForAsyncCopyCDNA4(
               dotOpEnc, cast<ttg::TensorOrMemDesc>(Type(srcTy)), sharedOrder,
-              /*useAsyncCopy=*/true, /*warpSize=*/64);
+              /*useAsyncCopy=*/true, warpSize);
           if (!attr)
             return py::none();
           return layoutToGluon(attr);

@@ -1204,7 +1204,8 @@ struct AsyncCopyGlobalToLocalOpConversion
           nullptr, nullptr, nullptr);
       if (targetInfo.requiresAliasInfoForAsyncOps())
         AMD::addAsyncCopyAliasScope(asyncLoadOp);
-    } else if (targetInfo.getISAFamily() == ISAFamily::CDNA5) {
+    } else if (targetInfo.getTargetFeatures().has(
+                   llvm::AMDGPU::FEAT_ASYNC_LOAD_TO_LDS_INSTS)) {
       switch (vecBits) {
       case 32:
         if (multicastMask)
@@ -1257,9 +1258,10 @@ struct AsyncCopyLocalToGlobalOpConversion
   matchAndRewrite(triton::amdgpu::AsyncCopyLocalToGlobalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (targetInfo.getISAFamily() != ISAFamily::CDNA5) {
+    if (!targetInfo.getTargetFeatures().has(
+            llvm::AMDGPU::FEAT_ASYNC_STORE_FROM_LDS_INSTS)) {
       return rewriter.notifyMatchFailure(
-          op, "async_copy_local_to_global only supported on CDNA5");
+          op, "async_copy_local_to_global needs the async LDS stores");
     }
 
     auto aux = LLVM::AMD::getBufferLoadStoreCtrlBits(
@@ -2458,16 +2460,11 @@ struct AtomicCASOpConversion
   }
 };
 
-bool supportsGlobalAtomicF16PackedAndDpp(ISAFamily isaFamily) {
-  switch (isaFamily) {
-  case ISAFamily::CDNA2:
-  case ISAFamily::CDNA3:
-  case ISAFamily::CDNA4:
-    return true;
-  default:
-    break;
-  }
-  return false;
+// The f16 packing also needs the gfx9 DPP wavefront shifts.
+bool supportsGlobalAtomicF16PackedAndDpp(const AMD::TargetInfo &targetInfo) {
+  return targetInfo.getTargetFeatures().has(
+             llvm::AMDGPU::FEAT_ATOMIC_BUFFER_GLOBAL_PK_ADD_F16_INSTS) &&
+         targetInfo.supportDppBroadcast();
 }
 
 struct AtomicRMWOpConversion
@@ -2575,10 +2572,9 @@ struct AtomicRMWOpConversion
       vec = std::min<unsigned>(vec, availableVecSize);
       // Force F16 packing in the case it's not coming in as packed, but the
       // ISA can support packed atomic instructions.
-      applyPackingF16 =
-          supportsGlobalAtomicF16PackedAndDpp(targetInfo.getISAFamily()) &&
-          vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD &&
-          !enableIntraWaveReduce;
+      applyPackingF16 = supportsGlobalAtomicF16PackedAndDpp(targetInfo) &&
+                        vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD &&
+                        !enableIntraWaveReduce;
 
       auto threadOrder = getThreadOrder(tensorTy);
       unsigned contigWithinLanes =
@@ -2700,7 +2696,7 @@ struct AsyncWaitOpConversion
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
-    if (targetInfo.getISAFamily() == ISAFamily::CDNA5) {
+    if (targetInfo.getTargetFeatures().has(llvm::AMDGPU::FEAT_ASYNCCNT)) {
       // Clamp asyncCnt to 6bits(hw limit); lower means conservative
       unsigned asyncCnt = std::min(63u, op.getNumInst());
       ROCDL::WaitAsynccntOp::create(rewriter, loc, asyncCnt);

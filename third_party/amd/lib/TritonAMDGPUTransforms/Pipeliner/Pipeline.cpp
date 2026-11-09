@@ -201,13 +201,13 @@ struct TritonAMDGPUPipelinePass
 
     if (useAsyncCopy) {
       auto targetFeatures = tt::amdgpu::TargetFeatures::fromModuleOp(moduleOp);
-      // Only asyncmark targets (CDNA3/CDNA4) need updateWaits here: their
+      // Only asyncmark targets (the LDS DMA loads) need updateWaits here: their
       // lowering reads ttg.async_wait's `num` directly into wait.asyncmark(N),
       // and PR #9883 made UpdateAsyncWaitCount a no-op on those archs, so
       // without this call the pipeliner-authored num=0 would serialize the
       // SWP. Every other family keeps the prior combineRedundantWaitOps-only
       // path: their num is re-derived downstream by UpdateAsyncWaitCount.
-      if (targetFeatures.isCDNA3() || targetFeatures.isCDNA4()) {
+      if (targetFeatures.useAsyncMarks()) {
         mlir::triton::updateWaits(moduleOp);
       }
     }

@@ -1,4 +1,6 @@
 // RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1250" | FileCheck %s --check-prefixes=CHECK,GFX1250
+// gfx13 takes the gfx1250 paths, but lacks wmma-16x16x128fp8-insts.
+// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1310" | FileCheck %s --check-prefixes=CHECK
 // RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1250-strict" | FileCheck %s --check-prefixes=STRICT
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>

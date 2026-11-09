@@ -205,10 +205,10 @@ struct TruncFOpConversion
 
   explicit TruncFOpConversion(LLVMTypeConverter &typeConverter,
                               ModuleAxisInfoAnalysis &axisAnalysisPass,
-                              ISAFamily isaFamily,
+                              const amdgpu::TargetFeatures &features,
                               PatternBenefit benefit = patternBenefitDefault)
       : ElementwiseOpConversionBase(typeConverter, axisAnalysisPass, benefit),
-        isaFamily(isaFamily) {}
+        features(features) {}
 
   SmallVector<Value> createDestOps(arith::TruncFOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter,
@@ -218,13 +218,13 @@ struct TruncFOpConversion
     auto inElemTy = getElementTypeOrSelf(op.getIn());
     if (inElemTy.isF32() && (outElemTy.isBF16() || outElemTy.isF16())) {
       return AMD::convertFp32ToF16rtne(loc, rewriter, inElemTy, outElemTy,
-                                       operands, isaFamily);
+                                       operands, features);
     }
     return {LLVM::FPTruncOp::create(rewriter, loc, elemTy, operands[0][0])};
   }
 
 private:
-  ISAFamily isaFamily;
+  const amdgpu::TargetFeatures &features;
 };
 
 struct ExpOpConversionApprox
@@ -482,7 +482,9 @@ void populateElementwiseOpToLLVMPatterns(
   patterns.add<ElementwiseOpConversion<triton::PreciseSqrtOp, LLVM::SqrtOp>>(
       typeConverter, axisInfoAnalysis, benefit);
 
-  if (targetInfo.getISAFamily() == ISAFamily::CDNA5) {
+  // Packed f32 arithmetic has only been found profitable on CDNA5.
+  if (targetInfo.supportBitwidth32Elementwise() &&
+      targetInfo.getISAFamily() == ISAFamily::CDNA5) {
     auto cdna5Benefit = benefit.getBenefit() + 1;
     patterns.add<PackedArithOpConversion<arith::SubFOp, LLVM::FSubOp>>(
         typeConverter, axisInfoAnalysis, cdna5Benefit);
@@ -502,7 +504,7 @@ void populateElementwiseOpToLLVMPatterns(
 
   patterns.add<ExtFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis,
-                                   targetInfo.getISAFamily(), benefit);
+                                   targetInfo.getTargetFeatures(), benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<ElementwiseOpConversion<arith::UIToFPOp, LLVM::UIToFPOp>>(

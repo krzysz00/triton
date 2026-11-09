@@ -142,22 +142,17 @@ Value TargetInfo::ballot(RewriterBase &rewriter, Location loc, Type type,
 Value TargetInfo::getGlobalTimer(RewriterBase &rewriter, Location loc) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Value timer;
-  switch (getISAFamily()) {
-  case ISAFamily::RDNA3:
-  case ISAFamily::RDNA4m:
-  case ISAFamily::RDNA4:
-  case ISAFamily::CDNA5: {
+  // gfx11 removed s_memrealtime.
+  if (!targetFeatures.has(llvm::AMDGPU::FEAT_S_MEMREALTIME) &&
+      targetFeatures.has(llvm::AMDGPU::FEAT_GFX11_INSTS)) {
     Value msg = b.i32_val(/*MSG_RTN_GET_REALTIME=*/131);
     timer = LLVM::createLLVMIntrinsicCallOp(
                 rewriter, loc, "llvm.amdgcn.s.sendmsg.rtn.i64", i64_ty, {msg})
                 .getResult(0);
-    break;
-  }
-  default:
+  } else {
     timer = LLVM::createLLVMIntrinsicCallOp(
                 rewriter, loc, "llvm.amdgcn.s.memrealtime", i64_ty, {})
                 .getResult(0);
-    break;
   }
   // The clock generator runs at 100 MHz, so each tick is 10 ns.
   return b.mul(timer, b.i64_val(10));
@@ -288,7 +283,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
 
 Value TargetInfo::shuffleXor(RewriterBase &rewriter, Location loc, Value val,
                              int i) const {
-  return LLVM::AMD::shuffleXor(loc, rewriter, val, i, getISAFamily());
+  return LLVM::AMD::shuffleXor(loc, rewriter, val, i, targetFeatures);
 }
 
 std::pair<Value, Value> TargetInfo::shuffleUp(RewriterBase &rewriter,
@@ -304,12 +299,12 @@ std::pair<Value, Value> TargetInfo::shuffleUp(RewriterBase &rewriter,
 
 Value TargetInfo::shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
                              int i) const {
-  return LLVM::AMD::shuffleIdx(loc, rewriter, val, i, getISAFamily());
+  return LLVM::AMD::shuffleIdx(loc, rewriter, val, i, targetFeatures);
 }
 
 Value TargetInfo::shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
                              Value i) const {
-  return LLVM::AMD::shuffleIdx(loc, rewriter, val, i, getISAFamily());
+  return LLVM::AMD::shuffleIdx(loc, rewriter, val, i, targetFeatures);
 }
 
 Value TargetInfo::permute(RewriterBase &rewriter, Location loc, Value a,
@@ -420,7 +415,8 @@ static Value permuteAndReduce(RewriterBase &rewriter, Location loc,
 //   step 4: apply reduction to get the final results
 static bool warpReduceSwap16or32(RewriterBase &rewriter, Location loc,
                                  SmallVector<Value> &acc, triton::ReduceOp op,
-                                 unsigned reduceLaneIdMask) {
+                                 unsigned reduceLaneIdMask,
+                                 const amdgpu::TargetFeatures &features) {
   Operation *reduxOp = op.getSingleCombiner();
   if (!reduxOp)
     return false;
@@ -428,6 +424,9 @@ static bool warpReduceSwap16or32(RewriterBase &rewriter, Location loc,
   bool mfma32Case = reduceLaneIdMask == 32;
   bool mfma16Case = reduceLaneIdMask == (16 | 32);
   if (!(mfma32Case || mfma16Case))
+    return false;
+  if (!features.supportsPermlane32Swap() ||
+      (mfma16Case && !features.supportsPermlane16Swap()))
     return false;
 
   Value val = acc[0];
@@ -455,8 +454,8 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                             unsigned /*broadcastLaneIdMask*/) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
 
-  if (getISAFamily() == ISAFamily::CDNA4 &&
-      warpReduceSwap16or32(rewriter, loc, acc, op, reduceLaneIdMask))
+  if (warpReduceSwap16or32(rewriter, loc, acc, op, reduceLaneIdMask,
+                           targetFeatures))
     return true;
 
   if (reduceLaneIdMask != (getWarpSize() - 1))
@@ -759,6 +758,7 @@ unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {
 
 std::pair<mlir::triton::gpu::LocalMemOpTile, mlir::triton::gpu::LocalMemOpTile>
 TargetInfo::getSharedLdStTiles(int32_t vecBitwidth) const {
+  // A microarchitectural cost model LLVM does not describe, so keyed by family.
   switch (getISAFamily()) {
   case ISAFamily::CDNA3:
   case ISAFamily::RDNA3:

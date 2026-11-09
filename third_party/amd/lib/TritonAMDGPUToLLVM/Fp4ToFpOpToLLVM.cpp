@@ -28,7 +28,7 @@ protected:
                                        Value packedVec,
                                        Type elemType) const override {
     auto values = upcast8xMxfp4_SW(rewriter, op, elemType.isF16(), packedVec,
-                                   targetInfo.getISAFamily());
+                                   targetInfo.getTargetFeatures());
     assert(values.size() == 8);
     std::array<Value, 8> results;
     std::copy(values.begin(), values.end(), results.begin());

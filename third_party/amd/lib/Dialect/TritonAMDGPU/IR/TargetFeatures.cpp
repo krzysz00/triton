@@ -51,10 +51,10 @@ ISAFamily TargetFeatures::getISAFamily() const { return isaFamily; }
 
 namespace {
 ISAFamily computeISAFamily(const ::mlir::ROCDL::TargetInfo &info) {
-  // Classify by generation and feature rather than by processor name, so that
-  // generic targets and processors added to LLVM later land in the family
-  // whose instructions they have. See
-  // https://llvm.org/docs/AMDGPUUsage.html#processors for the grouping.
+  // Classify by feature so generic and future targets land in the right family.
+  // gfx13 takes the gfx1250 paths until it needs its own.
+  if (info.has(FEAT_GFX1250_INSTS))
+    return ISAFamily::CDNA5;
   if (info.isGeneration(9)) {
     if (info.has(FEAT_GFX950_INSTS))
       return ISAFamily::CDNA4;
@@ -70,11 +70,8 @@ ISAFamily computeISAFamily(const ::mlir::ROCDL::TargetInfo &info) {
       return ISAFamily::RDNA4m;
     return ISAFamily::RDNA3;
   }
-  if (info.isGeneration(12)) {
-    if (info.has(FEAT_GFX1250_INSTS))
-      return ISAFamily::CDNA5;
+  if (info.isGeneration(12))
     return ISAFamily::RDNA4;
-  }
   return ISAFamily::Unknown;
 }
 } // namespace
@@ -108,8 +105,8 @@ int TargetFeatures::getWarpSize() const {
 }
 
 bool TargetFeatures::supportsWaveId() const {
-  return getISAFamily() == ISAFamily::RDNA4 ||
-         getISAFamily() == ISAFamily::CDNA5;
+  // LLVM reads the wave ID from TTMP8, which needs gfx12's architected SGPRs.
+  return has(FEAT_GFX12_INSTS);
 }
 
 int TargetFeatures::getSharedMemorySize() const {
@@ -305,14 +302,20 @@ bool TargetFeatures::supportsCvtPkScalePk8Block16() const {
   return supportsCvtPkScalePk8() && has(FEAT_BLOCK16_CVT_SCALE_INSTS);
 }
 
-ArrayRef<StringRef> TargetFeatures::getUnsupportedWmmaFeatures() const {
-  // gfx1250-strict restricts more WMMA instructions than LLVM's feature bits
-  // (wmma-f4-insts, wmma-16x16x128fp8-insts) describe, so this stays keyed on
-  // the processor.
-  static const StringRef kGFX1250Strict[] = {kWmmaRestrictedInstsFeature};
+SmallVector<StringRef, 3> TargetFeatures::getUnsupportedWmmaFeatures() const {
+  SmallVector<StringRef, 3> unsupported;
+  // Only the gfx1250 WMMA table entries carry feature tags.
+  if (has(FEAT_GFX1250_INSTS)) {
+    if (!has(FEAT_WMMA_F4_INSTS))
+      unsupported.push_back(kWmmaF4InstsFeature);
+    if (!has(FEAT_WMMA_16X16X128FP8_INSTS))
+      unsupported.push_back(kWmma16x16x128Fp8InstsFeature);
+  }
+  // TODO(llvm): gfx1250-strict also forbids the 16x16x32 f16/bf16 and 16x16x64
+  // fp8/bf8/iu8 WMMAs, which LLVM still lists for it.
   if (isGFX1250Strict())
-    return kGFX1250Strict;
-  return {};
+    unsupported.push_back(kWmmaRestrictedInstsFeature);
+  return unsupported;
 }
 
 bool TargetFeatures::hasScaledPkCvtInsts() const {

@@ -9,7 +9,6 @@
 #include "triton/Tools/LayoutUtils.h"
 
 namespace ttg = triton::gpu;
-using mlir::triton::amdgpu::ISAFamily;
 
 namespace mlir {
 
@@ -265,9 +264,10 @@ struct TritonAMDGPUCoalesceAsyncCopyPass
 
     mlir::RewritePatternSet patterns(context);
 
-    if (!llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
-                            targetInfo.getISAFamily()))
-      return; // This pass is CDNA3 and CDNA4 specific.
+    // Coalescing is only needed for LDS writes from a per-wave base address.
+    if (!targetInfo.supportsBufferLoadToLocal() ||
+        targetInfo.supportsDirectToLdsScatter())
+      return;
 
     // Precompute the contiguity of all AsyncCopy ops based on the src and
     // mask contiguity/alignment to avoid rebuilding ModuleAxisInfoAnalysis

@@ -12,7 +12,6 @@
 #include "triton/Tools/LinearLayout.h"
 #include <type_traits>
 
-using mlir::triton::amdgpu::ISAFamily;
 using ::mlir::triton::gpu::MemDescType;
 
 namespace {
@@ -31,9 +30,10 @@ static LLVM::FenceOp createAMDGPUMemoryFence(OpBuilder &builder, Location loc,
 }
 
 // Creates and returns the result Value of a single ds_read_tr* op for the
-// given (isaFamily, logicalBitWidth).
+// given target and logicalBitWidth.
 static Value createDsReadTr(Operation *op, RewriterBase &rewriter, Location loc,
-                            Value vecAddr, VectorType vTy, ISAFamily isaFamily,
+                            Value vecAddr, VectorType vTy,
+                            const triton::amdgpu::TargetFeatures &features,
                             unsigned logicalBitWidth) {
   // tr16 instructions return vectors of bf16/f16 while tr8 and tr4
   // instructions return vectors of i32. Generate the corresponding i32 vector
@@ -43,16 +43,15 @@ static Value createDsReadTr(Operation *op, RewriterBase &rewriter, Location loc,
   const auto numElemsI32 = (vTy.getNumElements() * physicalBitWidth / 32);
   const auto vTyI32 = VectorType::get(numElemsI32, i32_ty);
 
-  // CDNA5 uses opaque LLVM intrinsic calls; their results cannot be cast to
-  // AliasAnalysisOpInterface, so no no-alias scope is attached.
+  // ds_load_tr* uses opaque LLVM intrinsic calls; their results cannot be cast
+  // to AliasAnalysisOpInterface, so no no-alias scope is attached.
   auto callIntrinsic = [&](StringRef name, VectorType retTy) -> Value {
     return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, name, {retTy},
                                            {vecAddr})
         .getResult(0);
   };
 
-  switch (isaFamily) {
-  case ISAFamily::CDNA5:
+  if (features.has(llvm::AMDGPU::FEAT_GFX1250_INSTS)) {
     if (logicalBitWidth == 16)
       return callIntrinsic("llvm.amdgcn.ds.load.tr16.b128", vTy);
     if (logicalBitWidth == 8)
@@ -60,7 +59,8 @@ static Value createDsReadTr(Operation *op, RewriterBase &rewriter, Location loc,
     if (logicalBitWidth == 4)
       return callIntrinsic("llvm.amdgcn.ds.load.tr4.b64", vTyI32);
     return {};
-  case ISAFamily::CDNA4: {
+  }
+  if (features.has(llvm::AMDGPU::FEAT_GFX950_INSTS)) {
     Value dsReadTr;
     if (logicalBitWidth == 16)
       dsReadTr = ROCDL::ds_read_tr16_b64::create(
@@ -77,9 +77,7 @@ static Value createDsReadTr(Operation *op, RewriterBase &rewriter, Location loc,
         op, cast<LLVM::AliasAnalysisOpInterface>(dsReadTr.getDefiningOp()));
     return dsReadTr;
   }
-  default:
-    return {};
-  }
+  return {};
 }
 
 // Emits a single ds_read_tr* operation at `vecAddr` and unpacks the loaded
@@ -94,8 +92,9 @@ SmallVector<Value> emitDsReadTr(Operation *op, Location loc, Value vecAddr,
   const auto physicalBitWidth = getIntOrFloatOrPtrBitWidth(llvmElemTy);
   assert(physicalBitWidth == 16 || physicalBitWidth == 8);
 
-  Value dsReadTr = createDsReadTr(op, rewriter, loc, vecAddr, vTy,
-                                  targetInfo.getISAFamily(), logicalBitWidth);
+  Value dsReadTr =
+      createDsReadTr(op, rewriter, loc, vecAddr, vTy,
+                     targetInfo.getTargetFeatures(), logicalBitWidth);
   if (!dsReadTr)
     return {};
 
@@ -634,10 +633,12 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     // A local-only fence omits the vector cache invalidate. This is safe only
     // when all waves share one L0, so an acquire in one wave covers the others.
-    auto isaFamily = targetInfo.getISAFamily();
+    // Without WGPs, or in CU mode, a workgroup runs on one CU.
+    const auto &features = targetInfo.getTargetFeatures();
     bool workgroupSharesOneL0 =
-        mlir::triton::amdgpu::isCDNA(isaFamily) ||
-        (mlir::triton::amdgpu::isRDNA(isaFamily) && targetInfo.isCuMode());
+        !features.getTargetInfo().isUnknown() &&
+        (!features.has(llvm::AMDGPU::FEAT_SUPPORTS_WGP) ||
+         targetInfo.isCuMode());
     if (op.isWarp() || !workgroupSharesOneL0)
       return failure();
     // Check no other memory addrspaces are selected.
